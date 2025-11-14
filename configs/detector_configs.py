@@ -5,10 +5,29 @@ from math import exp
 
 class DetectorType(Enum):
     RADAR = "radar"
-    ACUSTIC = "acustic"
+    ACOUSTIC = "acoustic"
     VISUAL = "visual"
     RADIO = "radio"
 
+
+@dataclass(frozen=True)
+class BaseConfig:
+    """Configuration for an acoustic detector."""
+
+    radius: float = 100
+
+    def probability(self, distance: float) -> float:
+        """
+        Simple linear falloff:
+        - p(0)   = 1.0
+        - p(r)   = 0.0
+        - p(d)   = 0.0 for d >= r
+        """
+        d = max(0.0, float(distance))
+        if d >= self.radius:
+            return 0.0
+        p = 1.0 - d / self.radius
+        return max(0.0, min(1.0, p))
 
 @dataclass(frozen=True)
 class AcousticDetectorConfig:
