@@ -1,5 +1,5 @@
 import configs.detector_configs as detector_configs
-
+import numpy as np
 
 class Detector:
     def __init__(self, type: detector_configs.DetectorType, position: tuple):
@@ -72,11 +72,10 @@ def Rect_Detectors(detector_type: detector_configs.DetectorType, grid_size: tupl
         y_min, y_max = 0.0, float(height)
 
     # Create ranges with the requested spacing (include endpoint)
-    import numpy as _np
     if spacing <= 0:
         raise ValueError('spacing must be positive')
-    xs = _np.arange(x_min, x_max + 1e-8, spacing)
-    ys = _np.arange(y_min, y_max + 1e-8, spacing)
+    xs = np.arange(x_min, x_max + 1e-8, spacing)
+    ys = np.arange(y_min, y_max + 1e-8, spacing)
 
     for x in xs:
         for y in ys:
@@ -97,7 +96,6 @@ def Triang_Detectors(detector_type: detector_configs.DetectorType, triangle_corn
 
     Returns a list of `Detector` instances placed approximately on a grid inside the triangle.
     """
-    import numpy as _np
 
     if spacing <= 0:
         raise ValueError('spacing must be positive')
@@ -112,8 +110,8 @@ def Triang_Detectors(detector_type: detector_configs.DetectorType, triangle_corn
     y_min = min(y1, y2, y3)
     y_max = max(y1, y2, y3)
 
-    xs = _np.arange(x_min, x_max + 1e-8, spacing)
-    ys = _np.arange(y_min, y_max + 1e-8, spacing)
+    xs = np.arange(x_min, x_max + 1e-8, spacing)
+    ys = np.arange(y_min, y_max + 1e-8, spacing)
 
     # Barycentric method to test if point is inside triangle
     def _point_in_triangle(px, py):

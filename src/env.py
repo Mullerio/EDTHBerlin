@@ -194,7 +194,6 @@ class Environment:
         _plot_list(self.def_drones, 'green', 'defend')
         _plot_list(self.detectors, 'blue', 'detect')
 
-        # Overlay detector probability distributions using the main environment grid
         for det in self.detectors:
             try:
                 cx, cy = det.position
