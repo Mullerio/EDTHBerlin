@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import numpy as np
 from typing import List, Sequence, Tuple
 
 
@@ -9,12 +10,26 @@ class Attacker:
     """
     Represents a single attacker that moves linearly from a start position
     to a target position in a given number of steps.
+    
+    If target_position is None, it will be sampled from target_distribution.
     """
 
-    def __init__(self, start_position:tuple, target_position: tuple, steps: int):
+    def __init__(self, start_position:tuple, target_position: tuple = None, steps: int = 10, target_distribution = None, noise_std: float = 0.0):
         self.start_position = start_position
-        self.target_position = target_position
+
+        # Sample target from distribution if not provided
+        if target_position is None and target_distribution is not None:
+            # Sample one point from the target distribution
+            sampled = target_distribution.sample(1)  # Returns shape [1, 2]
+            self.target_position = tuple(sampled[0])  # Convert to tuple
+        elif target_position is not None:
+            self.target_position = target_position
+        else:
+            raise ValueError("Either target_position or target_distribution must be provided")
+
         self.steps = steps
+        # standard deviation of gaussian noise to add to intermediate trajectory points
+        self.noise_std = float(noise_std)
         self.trajectory = self.generate_trajectory()
 
     def generate_trajectory(self):
@@ -37,6 +52,13 @@ class Attacker:
                 + t * (self.target_position[d] - self.start_position[d])
                 for d in range(dimension)
             )
+            # optionally add Gaussian noise to intermediate points (not start/end)
+            if 0 < i < (self.steps - 1) and self.noise_std > 0.0:
+                pos_arr = np.array(position, dtype=float)
+                noise = np.random.normal(loc=0.0, scale=self.noise_std, size=pos_arr.shape)
+                pos_arr = pos_arr + noise
+                position = tuple(pos_arr.tolist())
+
             trajectory.append(position)
 
         return trajectory
@@ -57,25 +79,30 @@ class AttackerSwarm:
       around that point, controlled by `spread`.
     - One or more `target_positions` can be provided; if there are multiple,
       they are distributed evenly between the attackers (round‑robin).
+    - Alternatively, provide `target_distribution` to sample targets from a distribution.
     """
 
     def __init__(
         self,
         start_position,
-        target_positions,
+        target_positions = None,
         number_of_attackers: int = 1,
         spread: float = 0.0,
+        target_distribution = None,
+        noise_std: float = 0.0,
     ):
         if number_of_attackers < 1:
             raise ValueError("number_of_attackers must be at least 1")
 
-        if not target_positions:
-            raise ValueError("At least one target position must be provided")
+        if target_positions is None and target_distribution is None:
+            raise ValueError("Either target_positions or target_distribution must be provided")
 
         self.start_position = start_position
-        self.target_positions = list(target_positions)
+        self.target_positions = list(target_positions) if target_positions is not None else None
         self.number_of_attackers: int = number_of_attackers
         self.spread: float = spread
+        self.target_distribution = target_distribution
+        self.noise_std = float(noise_std)
 
     def _sample_start_around_center(self):
         """
@@ -100,7 +127,10 @@ class AttackerSwarm:
         Choose a target for the attacker with index `idx`.
 
         Multiple targets are distributed evenly using a round‑robin scheme.
+        If using target_distribution, returns None (will be sampled in Attacker.__init__).
         """
+        if self.target_positions is None:
+            return None
         return self.target_positions[idx % len(self.target_positions)]
 
     def generate_swarm(self, steps: int) -> List[Attacker]:
@@ -109,14 +139,21 @@ class AttackerSwarm:
 
         Each attacker:
         - Starts at a position sampled around `start_position` (controlled by `spread`).
-        - Is assigned a target chosen from `target_positions`, distributed evenly.
+        - Is assigned a target chosen from `target_positions` (round-robin), or 
+          sampled from `target_distribution` if provided.
         """
         swarm: List[Attacker] = []
 
         for i in range(self.number_of_attackers):
             attacker_start = self._sample_start_around_center()
             attacker_target = self._target_for_index(i)
-            swarm.append(Attacker(attacker_start, attacker_target, steps=steps))
+            swarm.append(Attacker(
+                attacker_start, 
+                attacker_target, 
+                steps=steps,
+                target_distribution=self.target_distribution,
+                noise_std=self.noise_std,
+            ))
 
         return swarm
 

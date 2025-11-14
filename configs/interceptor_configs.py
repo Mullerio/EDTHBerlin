@@ -6,6 +6,13 @@ from math import exp
 class InterceptorType(Enum):
     A = "A"
     B = "B"
+    
+@dataclass(frozen=True)
+class BaseInterceptorConfig:
+    """Configuration for Interceptor A."""
+    capacity: float = 10
+    velocity: float = 100
+    time_to_start: float = 20
 
 
 @dataclass(frozen=True)

@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
-from math import exp
+import numpy as np
 
 
 class DetectorType(Enum):
@@ -14,7 +14,7 @@ class DetectorType(Enum):
 class BaseConfig:
     """Configuration for an acoustic detector."""
 
-    radius: float = 100
+    radius: float = 5
 
     def probability(self, distance: float) -> float:
         """
@@ -23,17 +23,23 @@ class BaseConfig:
         - p(r)   = 0.0
         - p(d)   = 0.0 for d >= r
         """
-        d = max(0.0, float(distance))
-        if d >= self.radius:
-            return 0.0
-        p = 1.0 - d / self.radius
-        return max(0.0, min(1.0, p))
+        # Vectorized: accept scalar or numpy array
+        arr = np.asarray(distance)
+        clipped = np.maximum(arr, 0.0)
+        p = np.zeros_like(clipped, dtype=float)
+        mask = clipped < self.radius
+        p[mask] = 1.0 - (clipped[mask] / self.radius)
+        p = np.clip(p, 0.0, 1.0)
+        # Return scalar if input was scalar
+        if np.ndim(distance) == 0:
+            return float(p)
+        return p
 
 @dataclass(frozen=True)
 class AcousticDetectorConfig:
     """Configuration for an acoustic detector."""
 
-    radius: float = 100
+    radius: float = 20
 
     def probability(self, distance: float) -> float:
         """
@@ -42,18 +48,22 @@ class AcousticDetectorConfig:
         - p(r)   = 0.0
         - p(d)   = 0.0 for d >= r
         """
-        d = max(0.0, float(distance))
-        if d >= self.radius:
-            return 0.0
-        p = 1.0 - d / self.radius
-        return max(0.0, min(1.0, p))
+        arr = np.asarray(distance)
+        clipped = np.maximum(arr, 0.0)
+        p = np.zeros_like(clipped, dtype=float)
+        mask = clipped < self.radius
+        p[mask] = 1.0 - (clipped[mask] / self.radius)
+        p = np.clip(p, 0.0, 1.0)
+        if np.ndim(distance) == 0:
+            return float(p)
+        return p
 
 
 @dataclass(frozen=True)
 class VisualDetectorConfig:
     """Configuration for a visual detector."""
 
-    radius: float = 100
+    radius: float = 10
 
     def probability(self, distance: float) -> float:
         """
@@ -62,19 +72,24 @@ class VisualDetectorConfig:
         - p(r)   = 0.0
         - p(d)   = 0.0 for d >= r
         """
-        d = max(0.0, float(distance))
-        if d >= self.radius:
-            return 0.0
-        x = d / self.radius
-        p = 1.0 - x * x
-        return max(0.0, min(1.0, p))
+        arr = np.asarray(distance)
+        clipped = np.maximum(arr, 0.0)
+        p = np.zeros_like(clipped, dtype=float)
+        mask = clipped < self.radius
+        x = np.zeros_like(clipped, dtype=float)
+        x[mask] = clipped[mask] / self.radius
+        p[mask] = 1.0 - x[mask] * x[mask]
+        p = np.clip(p, 0.0, 1.0)
+        if np.ndim(distance) == 0:
+            return float(p)
+        return p
 
 
 @dataclass(frozen=True)
 class RadarDetectorConfig:
     """Configuration for a radar detector."""
 
-    radius: float = 100
+    radius: float = 15
 
     def probability(self, distance: float) -> float:
         """
@@ -83,14 +98,18 @@ class RadarDetectorConfig:
         - p(r)   = 0.0
         - p(d)   = 0.0 for d >= r
         """
-        d = max(0.0, float(distance))
-        if d >= self.radius:
-            return 0.0
-
-        # Shape parameter can be tuned; larger => steeper falloff
-        k = 4.0
-        x = d / self.radius
-        p = exp(-k * x)  # in (0, 1] for x in [0, 1)
-        return max(0.0, min(1.0, p))
+        arr = np.asarray(distance)
+        clipped = np.maximum(arr, 0.0)
+        p = np.zeros_like(clipped, dtype=float)
+        mask = clipped < self.radius
+        if np.any(mask):
+            k = 4.0
+            x = np.zeros_like(clipped, dtype=float)
+            x[mask] = clipped[mask] / self.radius
+            p[mask] = np.exp(-k * x[mask])
+        p = np.clip(p, 0.0, 1.0)
+        if np.ndim(distance) == 0:
+            return float(p)
+        return p
 
 

@@ -9,6 +9,8 @@ class InterceptorUnit:
             self.config = interceptor_configs.InterceptorConfigA()
         if type == interceptor_configs.InterceptorType.B:
             self.config = interceptor_configs.InterceptorConfigB()
+        else:
+            self.config = interceptor_configs.BaseInterceptorConfig()
 
         self.velocity = self.config.velocity
         self.time_to_start = self.config.time_to_start
