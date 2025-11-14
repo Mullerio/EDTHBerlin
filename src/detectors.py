@@ -9,8 +9,7 @@ class DetectorType(Enum):
 
 
 class Detector:
-    def __init__(self, type: DetectorType)
+    def __init__(self, type: DetectorType):
         self.type = type
-        if type == DetectorType.RADAR:
             
 
