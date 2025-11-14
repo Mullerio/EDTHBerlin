@@ -216,6 +216,45 @@ class GaussianMixture(LogDensity, TargetDistribution):
         return GaussianMixture(means, covs, weights)
 
 
+class PointTarget(LogDensity, TargetDistribution):
+    """
+    Point target distribution - represents a single fixed target location.
+    Useful for scenarios where all attackers aim for the same destination point.
+    """
+    def __init__(self, point: np.ndarray, epsilon: float = 0.1):
+        """
+        point: shape [2,] - the target point location
+        epsilon: small spread for numerical stability (makes it a very tight Gaussian)
+        """
+        super().__init__()
+        self.point = point.astype(np.float64)
+        self.epsilon = epsilon
+        
+        # Use a very tight Gaussian centered at the point
+        self._gaussian = Gaussian(self.point, np.eye(2) * epsilon ** 2)
+    
+    def sample(self, num_samples: int) -> np.ndarray:
+        """
+        Sample returns the target point (with tiny noise for numerical stability).
+        Returns: shape [num_samples, 2]
+        """
+        # Return point with tiny Gaussian noise
+        return self._gaussian.sample(num_samples)
+    
+    def log_prob(self, x: np.ndarray) -> np.ndarray:
+        """
+        Compute log probability - very high near the point, very low elsewhere.
+        x: shape [batch_size, 2]
+        Returns: shape [batch_size, 1]
+        """
+        return self._gaussian.log_prob(x)
+    
+    @classmethod
+    def at_position(cls, x: float, y: float, epsilon: float = 0.1) -> "PointTarget":
+        """Create a point target at specified coordinates."""
+        return cls(np.array([x, y]), epsilon=epsilon)
+
+
 
 
 

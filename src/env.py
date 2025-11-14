@@ -1,10 +1,10 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
-from detectors import Detector
+from src.detectors import Detector
 #from attackers import Attacker 
 from abc import ABC, abstractmethod
-from targets import *
+from src.targets import *
 
 
 class Environment:
@@ -24,6 +24,22 @@ class Environment:
         self.grid = np.stack([xx.ravel(), yy.ravel()], axis=1)
         
         self.prob_map = self._generate_prob_map()
+        
+        #what part of the grid our radar can pick 
+        self.observable_mask = np.ones((self.height, self.width), dtype=bool)
+        
+    def set_subgrid_unobservable(self, x0, y0, w, h):
+        """
+        Mark a rectangular subgrid as unobservable.
+        Coordinates are in the same units as width,height and map (x from 0..width-1, y from 0..height-1).
+        This sets observable_mask[y0:y0+h, x0:x0+w] = False (clamped to grid).
+        TODO: more complicated shapes! 
+        """
+        x0i = max(0, int(round(x0)))
+        y0i = max(0, int(round(y0)))
+        x1i = min(self.width, int(round(x0 + w)))
+        y1i = min(self.height, int(round(y0 + h)))
+        self.observable_mask[y0i:y1i, x0i:x1i] = False
     
     def _generate_prob_map(self) -> np.ndarray:
         """
@@ -32,10 +48,10 @@ class Environment:
         """
         
         # Evaluate log density at all grid points
-        log_probs = self.target.log_prob(self.grid)  # [width*height, 1]
+        log_probs = self.target.log_prob(self.grid)  #[width*height, 1]
         
         # Convert log densities to probabilities
-        densities = np.exp(log_probs.squeeze())  # [width*height,]
+        densities = np.exp(log_probs.squeeze())  #[width*height,]
         
         # Reshape back to grid
         prob_map = densities.reshape(self.height, self.width)
@@ -253,3 +269,397 @@ class Environment:
         raise NotImplementedError
 
 
+
+class SectorEnv(Environment):
+    """
+    Environment for sector-based detection analysis.
+    
+    The grid is divided into observable and non-observable regions.
+    - Observable region: fully detectable (no detector drones needed, detection probability = 1.0)
+    - Non-observable region: requires detector drones with their respective detection distributions
+    
+    Use cases:
+    1. Calculate how long an attacker can fly through non-observable region before detection
+    2. Compute cumulative detection probability along a trajectory
+    3. Place detectors strategically in non-observable zones
+    """
+    
+    def __init__(self, width, height, target: TargetDistribution, 
+                 default_observable=True):
+        """
+        Initialize sector environment.
+        
+        Args:
+            width, height: grid dimensions
+            target: target probability distribution
+            default_observable: if True, entire grid starts as observable (then mark subgrids as non-observable)
+                               if False, entire grid starts as non-observable (then mark subgrids as observable)
+        """
+        super().__init__(width, height, target)
+        
+        # Override observable mask based on default
+        if default_observable:
+            self.observable_mask = np.ones((self.height, self.width), dtype=bool)
+        else:
+            self.observable_mask = np.zeros((self.height, self.width), dtype=bool)
+    
+    def set_rectangular_sector(self, x0, y0, w, h, observable):
+        """
+        Set a rectangular sector's observability.
+        
+        Args:
+            x0, y0: bottom-left corner coordinates
+            w, h: width and height of rectangle
+            observable: True to make region observable, False for non-observable
+        """
+        x0i = max(0, int(round(x0)))
+        y0i = max(0, int(round(y0)))
+        x1i = min(self.width, int(round(x0 + w)))
+        y1i = min(self.height, int(round(y0 + h)))
+        self.observable_mask[y0i:y1i, x0i:x1i] = observable
+    
+    def set_circular_sector(self, cx, cy, radius, observable):
+        """
+        Set a circular sector's observability.
+        
+        Args:
+            cx, cy: center coordinates
+            radius: circle radius
+            observable: True to make region observable, False for non-observable
+        """
+        for i in range(self.height):
+            for j in range(self.width):
+                dist = np.sqrt((j - cx)**2 + (i - cy)**2)
+                if dist <= radius:
+                    self.observable_mask[i, j] = observable
+    
+    def is_observable_at(self, x, y):
+        """
+        Check if a point (x, y) is in an observable region.
+        Returns True if observable (fully detectable without drones).
+        """
+        xi = int(round(np.clip(x, 0, self.width - 1)))
+        yi = int(round(np.clip(y, 0, self.height - 1)))
+        return self.observable_mask[yi, xi]
+    
+    def get_detection_probability_at_point(self, x, y):
+        """
+        Calculate detection probability at a single point (x, y).
+        
+        Returns:
+            float: detection probability in [0, 1]
+                  - 1.0 if point is in observable region
+                  - Combined detector probability if in non-observable region
+        """
+        # If in observable region, detection is certain
+        if self.is_observable_at(x, y):
+            return 1.0
+        
+        # In non-observable region, compute detection from detector drones
+        if len(self.detectors) == 0:
+            return 0.0
+        
+        # Combine detector probabilities (assuming independent detectors)
+        # P(detected) = 1 - P(not detected by any) = 1 - ∏(1 - P_i)
+        prob_not_detected = 1.0
+        
+        for det in self.detectors:
+            try:
+                cx, cy = det.position
+                dist = np.sqrt((x - cx)**2 + (y - cy)**2)
+                
+                # Try to get detection probability
+                try:
+                    p_det = det.probability(np.array([[x, y]]))
+                    if hasattr(p_det, '__len__'):
+                        p_det = float(p_det[0])
+                    else:
+                        p_det = float(p_det)
+                except Exception:
+                    try:
+                        p_det = det.probability(dist)
+                        p_det = float(p_det)
+                    except Exception:
+                        continue
+                
+                # Combine probabilities
+                prob_not_detected *= (1.0 - p_det)
+            except Exception:
+                continue
+        
+        return 1.0 - prob_not_detected
+    
+    def analyze_trajectory(self, trajectory, time_per_step=1.0, only_nonobservable=True):
+        """
+        Analyze detection probability along an attacker trajectory.
+        
+        Args:
+            trajectory: list of (x, y) waypoints
+            time_per_step: time elapsed between consecutive waypoints (seconds)
+            only_nonobservable: if True, only calculate detection for non-observable region
+                              (ignores observable regions where detection is automatic)
+        
+        Returns:
+            dict with keys:
+                - 'cumulative_detection_prob': probability of being detected at least once in non-observable region
+                - 'point_probs': detection probability at each waypoint (from detectors only)
+                - 'time_to_detection': time segments and detection probabilities in non-observable region
+                - 'time_in_observable': total time spent in observable region
+                - 'time_in_nonobservable': total time spent in non-observable region
+                - 'first_detection_time': time when cumulative prob exceeds threshold (if any)
+                - 'avg_detection_per_second': average detection probability per second in non-observable region
+                - 'detection_rate_per_interval': detection probability per time interval (e.g., per 10s)
+        """
+        if not trajectory or len(trajectory) == 0:
+            return {
+                'cumulative_detection_prob': 0.0,
+                'point_probs': [],
+                'time_to_detection': [],
+                'time_in_observable': 0.0,
+                'time_in_nonobservable': 0.0,
+                'first_detection_time': None,
+                'avg_detection_per_second': 0.0,
+                'detection_rate_per_interval': {}
+            }
+        
+        point_probs = []
+        time_in_obs = 0.0
+        time_in_nonobs = 0.0
+        
+        # Calculate detection probability at each waypoint
+        # Only from detectors (not automatic detection in observable regions)
+        for waypoint in trajectory:
+            x, y = waypoint
+            
+            # Track time in each region type
+            if self.is_observable_at(x, y):
+                time_in_obs += time_per_step
+                if only_nonobservable:
+                    # In observable region, don't count towards detection probability
+                    # (we know they're detected anyway, but we care about detector performance)
+                    point_probs.append(0.0)
+                else:
+                    point_probs.append(1.0)
+            else:
+                time_in_nonobs += time_per_step
+                # In non-observable region, get detection probability from detectors
+                p_det = 0.0
+                if len(self.detectors) > 0:
+                    prob_not_detected = 1.0
+                    for det in self.detectors:
+                        try:
+                            cx, cy = det.position
+                            dist = np.sqrt((x - cx)**2 + (y - cy)**2)
+                            
+                            try:
+                                p = det.probability(np.array([[x, y]]))
+                                if hasattr(p, '__len__'):
+                                    p = float(p[0])
+                                else:
+                                    p = float(p)
+                            except Exception:
+                                try:
+                                    p = det.probability(dist)
+                                    p = float(p)
+                                except Exception:
+                                    continue
+                            
+                            prob_not_detected *= (1.0 - p)
+                        except Exception:
+                            continue
+                    
+                    p_det = 1.0 - prob_not_detected
+                
+                point_probs.append(p_det)
+        
+        # Calculate cumulative detection probability (only in non-observable region)
+        # P(detected by step i) = 1 - ∏(1 - p_j) for j in non-observable region
+        cumulative_prob_not_detected = 1.0
+        cumulative_probs = []
+        time_to_detection = []
+        first_detection_time = None
+        nonobs_steps = 0
+        
+        for i, p in enumerate(point_probs):
+            x, y = trajectory[i]
+            in_nonobs = not self.is_observable_at(x, y)
+            
+            if in_nonobs or not only_nonobservable:
+                cumulative_prob_not_detected *= (1.0 - p)
+                if in_nonobs:
+                    nonobs_steps += 1
+            
+            cumulative_detection = 1.0 - cumulative_prob_not_detected
+            cumulative_probs.append(cumulative_detection)
+            
+            time_to_detection.append({
+                'time': i * time_per_step,
+                'point': trajectory[i],
+                'instant_prob': p,
+                'cumulative_prob': cumulative_detection,
+                'in_nonobservable': in_nonobs
+            })
+            
+            # Check if detection becomes likely (e.g., > 50%)
+            if first_detection_time is None and cumulative_detection > 0.5:
+                first_detection_time = i * time_per_step
+        
+        # Calculate average detection probability per second in non-observable region
+        total_detection_prob_nonobs = sum(p for i, p in enumerate(point_probs) 
+                                         if not self.is_observable_at(*trajectory[i]))
+        avg_detection_per_second = (total_detection_prob_nonobs / time_in_nonobs 
+                                   if time_in_nonobs > 0 else 0.0)
+        
+        # Calculate detection rate per various time intervals
+        detection_rate_per_interval = {}
+        for interval in [1, 5, 10, 30, 60]:  # seconds
+            steps_per_interval = max(1, int(interval / time_per_step))
+            # Probability of being detected at least once in 'interval' seconds
+            prob_not_detected_interval = (1.0 - avg_detection_per_second) ** interval
+            prob_detected_interval = 1.0 - prob_not_detected_interval
+            detection_rate_per_interval[f'{interval}s'] = prob_detected_interval
+        
+        return {
+            'cumulative_detection_prob': cumulative_probs[-1] if cumulative_probs else 0.0,
+            'point_probs': point_probs,
+            'time_to_detection': time_to_detection,
+            'time_in_observable': time_in_obs,
+            'time_in_nonobservable': time_in_nonobs,
+            'first_detection_time': first_detection_time,
+            'cumulative_probs': cumulative_probs,
+            'avg_detection_per_second': avg_detection_per_second,
+            'detection_rate_per_interval': detection_rate_per_interval
+        }
+    
+    def time_until_detection(self, trajectory, threshold=0.9, time_per_step=1.0):
+        """
+        Calculate time until cumulative detection probability exceeds threshold.
+        
+        Args:
+            trajectory: list of (x, y) waypoints
+            threshold: detection probability threshold (default 0.9 = 90%)
+            time_per_step: time per step in seconds
+        
+        Returns:
+            float: time in seconds until threshold exceeded, or None if never exceeded
+        """
+        analysis = self.analyze_trajectory(trajectory, time_per_step)
+        
+        for entry in analysis['time_to_detection']:
+            if entry['cumulative_prob'] >= threshold:
+                return entry['time']
+        
+        return None
+    
+    def visualize(self, figsize=(6, 6), ax=None, show=True, show_sectors=True):
+        """
+        Visualize environment with observable/non-observable sectors highlighted.
+        
+        Args:
+            show_sectors: if True, overlay observable/non-observable regions
+        """
+        # Call parent visualization
+        ax = super().visualize(figsize=figsize, ax=ax, show=False)
+        
+        if show_sectors:
+            # Create a mask overlay: green tint for observable, red tint for non-observable
+            sector_overlay = np.zeros((self.height, self.width, 4))
+            
+            # Observable regions: slight green tint
+            sector_overlay[self.observable_mask, :] = [0.0, 1.0, 0.0, 0.15]
+            
+            # Non-observable regions: slight red tint
+            sector_overlay[~self.observable_mask, :] = [1.0, 0.0, 0.0, 0.15]
+            
+            ax.imshow(sector_overlay, origin='lower', extent=(0, self.width, 0, self.height), zorder=1)
+            
+            # Add legend entries for sectors
+            from matplotlib.patches import Patch
+            legend_elements = [
+                Patch(facecolor='green', alpha=0.3, label='Observable'),
+                Patch(facecolor='red', alpha=0.3, label='Non-observable')
+            ]
+            handles, labels = ax.get_legend_handles_labels()
+            ax.legend(handles=handles + legend_elements, loc='upper right')
+        
+        if show:
+            plt.show()
+        
+        return ax
+    
+    def visualize_trajectory_analysis(self, attacker, figsize=(12, 5)):
+        """
+        Visualize trajectory with detection probability analysis.
+        
+        Args:
+            attacker: Attacker object with .trajectory attribute
+        
+        Returns:
+            fig, (ax1, ax2): matplotlib figure and axes
+        """
+        if not hasattr(attacker, 'trajectory') or not attacker.trajectory:
+            raise ValueError("Attacker must have a trajectory")
+        
+        trajectory = attacker.trajectory
+        
+        # Determine time_per_step from attacker speed if available
+        if hasattr(attacker, 'speed') and attacker.speed > 0:
+            # Trajectory was generated with per-second sampling
+            time_per_step = 1.0
+        else:
+            # Legacy: estimate from total steps
+            start = np.array(trajectory[0])
+            target = np.array(trajectory[-1])
+            total_dist = np.linalg.norm(target - start)
+            time_per_step = 1.0  # default fallback
+        
+        analysis = self.analyze_trajectory(trajectory, time_per_step)
+        
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+        
+        # Left plot: Trajectory on grid with sectors
+        self.visualize(ax=ax1, show=False, show_sectors=True)
+        traj_arr = np.array(trajectory)
+        ax1.plot(traj_arr[:, 0], traj_arr[:, 1], 'b-', linewidth=2, label='Trajectory', zorder=10)
+        ax1.plot(traj_arr[0, 0], traj_arr[0, 1], 'go', markersize=10, label='Start', zorder=11)
+        ax1.plot(traj_arr[-1, 0], traj_arr[-1, 1], 'rx', markersize=12, label='Target', zorder=11)
+        ax1.set_title('Trajectory & Sectors')
+        ax1.legend(loc='upper right')
+        
+        # Right plot: Detection probability over time
+        times = [entry['time'] for entry in analysis['time_to_detection']]
+        instant_probs = [entry['instant_prob'] for entry in analysis['time_to_detection']]
+        cumulative_probs = [entry['cumulative_prob'] for entry in analysis['time_to_detection']]
+        
+        ax2.plot(times, instant_probs, 'b-', label='Instant detection prob', alpha=0.6)
+        ax2.plot(times, cumulative_probs, 'r-', linewidth=2, label='Cumulative detection prob')
+        ax2.axhline(y=0.5, color='orange', linestyle='--', label='50% threshold')
+        ax2.axhline(y=0.9, color='red', linestyle='--', label='90% threshold')
+        
+        if analysis['first_detection_time'] is not None:
+            ax2.axvline(x=analysis['first_detection_time'], color='purple', 
+                       linestyle=':', label=f'50% at t={analysis["first_detection_time"]:.1f}s')
+        
+        ax2.set_xlabel('Time (seconds)')
+        ax2.set_ylabel('Detection Probability')
+        ax2.set_title('Detection Probability Analysis')
+        ax2.grid(True, alpha=0.3)
+        ax2.legend(loc='best')
+        ax2.set_ylim(0, 1.05)
+        
+        # Add text summary
+        summary = (f"Total time: {times[-1]:.1f}s\n"
+                  f"Time in observable: {analysis['time_in_observable']:.1f}s\n"
+                  f"Time in non-obs: {analysis['time_in_nonobservable']:.1f}s\n"
+                  f"Final detection prob: {analysis['cumulative_detection_prob']:.2%}\n"
+                  f"\nDetection per second: {analysis['avg_detection_per_second']:.3%}\n"
+                  f"Prob per 10s: {analysis['detection_rate_per_interval']['10s']:.2%}\n"
+                  f"Prob per 30s: {analysis['detection_rate_per_interval']['30s']:.2%}")
+        ax2.text(0.02, 0.98, summary, transform=ax2.transAxes, 
+                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5),
+                fontsize=8)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        return fig, (ax1, ax2)

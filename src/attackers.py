@@ -31,8 +31,9 @@ class Attacker:
         # standard deviation of gaussian noise to add to intermediate trajectory points
         self.noise_std = noise_std
         self.speed = speed   
-        self.trajectory = self.generate_trajectory()
         self.speed_noise = speed_noise
+
+        self.trajectory = self.generate_trajectory()
 
     def generate_trajectory(self):
         """
