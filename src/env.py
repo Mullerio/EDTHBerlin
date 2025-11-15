@@ -467,6 +467,142 @@ class SectorEnv(Environment):
         
         return 1.0 - prob_not_detected
     
+    def compute_sliding_window_detection(self, trajectory, time_per_step=1.0, window_sizes=[5, 10, 30, 60], only_nonobservable=True, include_observable_in_stats=False):
+        """
+        Compute TRUE detection probability over sliding time windows.
+
+        Args:
+            trajectory: list of (x, y) waypoints
+            time_per_step: seconds per waypoint
+            window_sizes: list of window lengths (seconds) to evaluate
+            only_nonobservable: if True, only calculate detection for non-observable region
+            include_observable_in_stats: if True, treat observable regions as 100% detection
+
+        Returns:
+            dict:
+                'windows': {
+                    'Xs': list of {
+                        'start_time': ...,
+                        'end_time': ...,
+                        'prob_detected': ...,
+                        'window_index': ...
+                    }
+                }
+                'summary': {
+                    'Xs': {
+                        'max': ...,
+                        'min': ...,
+                        'mean': ...
+                    }
+                }
+        """
+        if not trajectory:
+            return {'windows': {}, 'summary': {}}
+
+        # Compute instantaneous detection probabilities directly (avoid recursion)
+        instant_probs = []
+        times = []
+        
+        for i, (x, y) in enumerate(trajectory):
+            t = i * time_per_step
+            times.append(t)
+            
+            # Check if in observable region
+            is_observable = self.is_observable_at(x, y)
+            
+            if only_nonobservable and is_observable:
+                # In observable region
+                if include_observable_in_stats:
+                    instant_probs.append(1.0)  # Observable = 100% detection
+                else:
+                    instant_probs.append(0.0)  # Exclude observable from stats
+            else:
+                # In non-observable region OR not filtering by observability
+                # Calculate detection probability from all detectors at this point
+                p_det = 0.0
+                if len(self.detectors) > 0:
+                    prob_not_detected = 1.0
+                    for det in self.detectors:
+                        try:
+                            cx, cy = det.position
+                            dist = np.sqrt((x - cx)**2 + (y - cy)**2)
+                            
+                            try:
+                                p = det.probability(np.array([[x, y]]))
+                                if hasattr(p, '__len__'):
+                                    p = float(p[0])
+                                else:
+                                    p = float(p)
+                            except Exception:
+                                try:
+                                    p = det.probability(dist)
+                                    p = float(p)
+                                except Exception:
+                                    continue
+                            
+                            prob_not_detected *= (1.0 - p)
+                        except Exception:
+                            continue
+                    
+                    p_det = 1.0 - prob_not_detected
+                
+                instant_probs.append(p_det)
+        
+        N = len(instant_probs)
+
+        results = {'windows': {}, 'summary': {}}
+
+        for W in window_sizes:
+            steps_per_window = int(W / time_per_step)
+            if steps_per_window < 1:
+                continue
+
+            window_results = []
+            probs = []
+
+            for start in range(0, N - steps_per_window + 1):
+                end = start + steps_per_window
+
+                window_instants = instant_probs[start:end]
+                
+                # When excluding observable regions, skip windows that contain observable points (0.0)
+                # unless we're including them as 1.0
+                if only_nonobservable and not include_observable_in_stats:
+                    # Check if window contains any observable points (marked as 0.0)
+                    # Skip this window if it spans observable regions
+                    if any(p == 0.0 and self.is_observable_at(*trajectory[start + idx]) 
+                           for idx, p in enumerate(window_instants)):
+                        continue
+
+                # REAL probability: 1 − Π (1 − p_i)
+                prob_not = 1.0
+                for p in window_instants:
+                    prob_not *= (1 - p)
+
+                prob_detected = 1 - prob_not
+
+                window_results.append({
+                    'window_index': start,
+                    'start_time': times[start],
+                    'end_time': times[end-1],
+                    'prob_detected': prob_detected,
+                })
+
+                probs.append(prob_detected)
+
+            results['windows'][f"{W}s"] = window_results
+
+            if probs:
+                results['summary'][f"{W}s"] = {
+                    'max': max(probs),
+                    'min': min(probs),
+                    'mean': sum(probs) / len(probs)
+                }
+            else:
+                results['summary'][f"{W}s"] = {'max': 0, 'min': 0, 'mean': 0}
+
+        return results
+    
     def analyze_trajectory(self, trajectory, time_per_step=1.0, only_nonobservable=True, include_observable_in_stats=False):
         """
         Analyze detection probability along an attacker trajectory.
@@ -586,24 +722,31 @@ class SectorEnv(Environment):
                 first_detection_time = i * time_per_step
         
         # Calculate average detection probability per second
+        # This should be the AVERAGE instantaneous probability, not cumulative sum / time
         if include_observable_in_stats and only_nonobservable:
             # Include observable regions (as 100% detection) in the calculation
             # For non-observable points: use actual detector probabilities
             # For observable points: treat as 1.0 detection probability per second
-            total_detection_prob_nonobs = sum(p for i, p in enumerate(point_probs) 
-                                             if not self.is_observable_at(*trajectory[i]))
-            # Observable time contributes 1.0 per second (100% detection)
-            total_detection_prob = total_detection_prob_nonobs + time_in_obs
+            nonobs_probs = [p for i, p in enumerate(point_probs) 
+                           if not self.is_observable_at(*trajectory[i])]
+            # Average of detector probs in non-obs + 1.0 in obs, weighted by time
+            if time_in_nonobs > 0:
+                avg_nonobs = sum(nonobs_probs) / len(nonobs_probs) if nonobs_probs else 0.0
+            else:
+                avg_nonobs = 0.0
+            
             total_time = time_in_obs + time_in_nonobs
-            avg_detection_per_second = (total_detection_prob / total_time 
+            # Weighted average: (non_obs_time * avg_nonobs + obs_time * 1.0) / total_time
+            avg_detection_per_second = ((time_in_nonobs * avg_nonobs + time_in_obs * 1.0) / total_time 
                                        if total_time > 0 else 0.0)
             time_for_intervals = total_time
         else:
             # Only consider non-observable region
-            total_detection_prob_nonobs = sum(p for i, p in enumerate(point_probs) 
-                                             if not self.is_observable_at(*trajectory[i]))
-            avg_detection_per_second = (total_detection_prob_nonobs / time_in_nonobs 
-                                       if time_in_nonobs > 0 else 0.0)
+            nonobs_probs = [p for i, p in enumerate(point_probs) 
+                           if not self.is_observable_at(*trajectory[i])]
+            # Average instantaneous probability per second
+            avg_detection_per_second = (sum(nonobs_probs) / len(nonobs_probs) 
+                                       if nonobs_probs else 0.0)
             time_for_intervals = time_in_nonobs
         
         # Calculate detection rate per various time intervals
@@ -620,6 +763,44 @@ class SectorEnv(Environment):
             prob_not_detected_interval = (1.0 - avg_detection_per_second) ** interval
             detection_rate_per_interval[f'{interval}s'] = 1.0 - prob_not_detected_interval
         
+        # Calculate maximum undetected gap statistics
+        # This answers: "What's the probability we have NO gap longer than X seconds?"
+        # We use a sliding window approach based on the average detection rate
+        max_undetected_gap = {}
+        
+        # Calculate the longest consecutive time with low detection probability
+        # Using the average detection per second, we can estimate gap probabilities
+        if time_in_nonobs > 0 and avg_detection_per_second > 0:
+            # For each gap threshold, calculate probability using exponential model
+            for gap_threshold in [5, 10, 30, 60]:  # seconds
+                # Probability of NOT being detected in a gap of length gap_threshold
+                prob_gap_undetected = (1.0 - avg_detection_per_second) ** gap_threshold
+                
+                # Count how many such gaps could theoretically exist
+                num_possible_gaps = max(1, int(time_in_nonobs / gap_threshold))
+                
+                # Probability that at least one gap of this length exists undetected
+                # P(at least one gap undetected) = 1 - P(all gaps have detection)
+                # P(all gaps have detection) = (1 - prob_gap_undetected)^num_gaps
+                prob_all_gaps_covered = (1.0 - prob_gap_undetected) ** num_possible_gaps
+                
+                # We want: P(NO gap longer than threshold without detection)
+                # This is the probability that all potential gaps have at least one detection
+                max_undetected_gap[f'{gap_threshold}s'] = prob_all_gaps_covered
+        else:
+            # No non-observable time or zero detection rate
+            for gap_threshold in [5, 10, 30, 60]:
+                max_undetected_gap[f'{gap_threshold}s'] = 0.0 if time_in_nonobs > 0 else 1.0
+        
+        # Calculate sliding window detection statistics (TRUE probabilities)
+        sliding_window_stats = self.compute_sliding_window_detection(
+            trajectory, 
+            time_per_step=time_per_step, 
+            window_sizes=[5, 10, 15, 30, 60],
+            only_nonobservable=only_nonobservable,
+            include_observable_in_stats=include_observable_in_stats
+        )
+        
         return {
             'cumulative_detection_prob': cumulative_probs[-1] if cumulative_probs else 0.0,
             'point_probs': point_probs,
@@ -629,7 +810,9 @@ class SectorEnv(Environment):
             'first_detection_time': first_detection_time,
             'cumulative_probs': cumulative_probs,
             'avg_detection_per_second': avg_detection_per_second,
-            'detection_rate_per_interval': detection_rate_per_interval
+            'detection_rate_per_interval': detection_rate_per_interval,
+            'max_undetected_gap': max_undetected_gap,
+            'sliding_window_stats': sliding_window_stats
         }
     
     def time_until_detection(self, trajectory, threshold=0.9, time_per_step=1.0):
@@ -768,6 +951,9 @@ class SectorEnv(Environment):
         
         analysis = self.analyze_trajectory(trajectory, time_per_step, only_nonobservable=True, include_observable_in_stats=include_observable_in_stats)
         
+        # Get sliding window stats for visualization
+        sliding_stats = analysis['sliding_window_stats']['summary']
+        
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
         
         # Left plot: Trajectory on grid with sectors
@@ -818,14 +1004,23 @@ class SectorEnv(Environment):
         ax2.legend(loc='best')
         ax2.set_ylim(0, 1.05)
         
-        # Add text summary
-        summary = (f"Total time: {times[-1]:.1f}s\n"
-                  f"Time in observable: {analysis['time_in_observable']:.1f}s\n"
-                  f"Time in non-obs: {analysis['time_in_nonobservable']:.1f}s\n"
-                  f"Final detection prob: {analysis['cumulative_detection_prob']:.2%}\n"
-                  f"\nDetection per second: {analysis['avg_detection_per_second']:.3%}\n"
-                  f"Prob per 10s: {analysis['detection_rate_per_interval']['10s']:.2%}\n"
-                  f"Prob per 30s: {analysis['detection_rate_per_interval']['30s']:.2%}")
+        # Add text summary with sliding window statistics
+        summary_lines = [
+            f"Total time: {times[-1]:.1f}s",
+            f"Time in observable: {analysis['time_in_observable']:.1f}s",
+            f"Time in non-obs: {analysis['time_in_nonobservable']:.1f}s",
+            f"\nDetection per second: {analysis['avg_detection_per_second']:.4%}",
+            f"\nSliding Window (Mean):"
+        ]
+        
+        if '5s' in sliding_stats:
+            summary_lines.append(f"  5s: {sliding_stats['5s']['mean']:.2%}")
+        if '15s' in sliding_stats:
+            summary_lines.append(f"  15s: {sliding_stats['15s']['mean']:.2%}")
+        if '30s' in sliding_stats:
+            summary_lines.append(f"  30s: {sliding_stats['30s']['mean']:.2%}")
+        
+        summary = '\n'.join(summary_lines)
         ax2.text(0.02, 0.98, summary, transform=ax2.transAxes, 
                 verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5),
                 fontsize=8)
