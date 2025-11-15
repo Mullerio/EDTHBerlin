@@ -260,6 +260,7 @@ def _build_coverage_matrix(
             dx_px = cell_center_x - radar_x
             distance_km = math.hypot(dx_px, dy_px) * KM_PER_PX
             if distance_km > range_km:
+                matrix[row, col] = 1
                 continue
             angle = math.atan2(-dy_px, dx_px)
             blocked = False

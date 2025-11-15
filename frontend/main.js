@@ -24,6 +24,8 @@ const downloadJsonButton = document.getElementById("download-json");
 const pythonPreview = document.getElementById("python-preview");
 const shapeCountEl = document.getElementById("shape-count");
 const shapeListEl = document.getElementById("shape-list");
+const loadCsvButton = document.getElementById("load-csv-grid");
+const csvGridInput = document.getElementById("csv-grid-input");
 
 const MAX_CANVAS_SIZE = 640;
 const MIN_CELL_SIZE = 6;
@@ -76,6 +78,10 @@ function init() {
   assignTargetButton.addEventListener("click", () => enableSelectionMode("target"));
   copyPythonButton.addEventListener("click", copyPythonSnippet);
   downloadJsonButton.addEventListener("click", downloadJsonPayload);
+  if (loadCsvButton && csvGridInput) {
+    loadCsvButton.addEventListener("click", () => csvGridInput.click());
+    csvGridInput.addEventListener("change", handleCsvGridUpload);
+  }
   window.addEventListener("resize", drawGrid);
 
   createGrid(state.rows, state.cols);
@@ -127,6 +133,107 @@ function createGrid(rows, cols) {
   updateStatus("Grid created. Click on the canvas to add vertices.");
   drawGrid();
   applyZoom();
+}
+
+async function handleCsvGridUpload(event) {
+  const input = event?.target ?? csvGridInput;
+  if (!input || !input.files || input.files.length === 0) {
+    return;
+  }
+  const file = input.files[0];
+  try {
+    updateStatus(`Loading ${file.name || "CSV"}...`);
+    const text = await file.text();
+    const matrix = parseCsvGrid(text);
+    applyImportedGrid(matrix, file.name);
+  } catch (error) {
+    console.error("CSV grid import failed:", error);
+    const message =
+      error && typeof error.message === "string"
+        ? error.message
+        : "Unexpected error.";
+    updateStatus(`CSV import failed: ${message}`);
+  } finally {
+    input.value = "";
+  }
+}
+
+function applyImportedGrid(matrix, sourceName) {
+  if (!Array.isArray(matrix) || matrix.length === 0) {
+    throw new Error("CSV grid is empty.");
+  }
+  const cols = matrix[0]?.length ?? 0;
+  if (cols === 0) {
+    throw new Error("CSV grid rows have no values.");
+  }
+
+  const safeMatrix = matrix.map((row) => row.slice());
+  const rows = safeMatrix.length;
+
+  rowsInput.value = String(rows);
+  colsInput.value = String(cols);
+
+  createGrid(rows, cols);
+  state.grid = safeMatrix;
+  drawGrid();
+  updatePythonPreview();
+  updateStatus(
+    sourceName
+      ? `Grid imported from "${sourceName}" (${rows}x${cols}). Assign attackers next.`
+      : `Grid imported (${rows}x${cols}). Assign attackers next.`
+  );
+}
+
+function parseCsvGrid(csvText) {
+  if (typeof csvText !== "string" || csvText.trim().length === 0) {
+    throw new Error("CSV file is empty.");
+  }
+  const sanitized = csvText.replace(/^\uFEFF/, "");
+  const lines = sanitized
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  if (lines.length === 0) {
+    throw new Error("CSV file is empty.");
+  }
+
+  let expectedCols = null;
+  const matrix = lines.map((line, rowIndex) => {
+    const tokens = line
+      .split(/[,;\s]+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length > 0);
+
+    if (tokens.length === 0) {
+      throw new Error(`Row ${rowIndex + 1} has no values.`);
+    }
+
+    if (expectedCols === null) {
+      expectedCols = tokens.length;
+    } else if (tokens.length !== expectedCols) {
+      throw new Error(
+        `Row ${rowIndex + 1} has ${tokens.length} columns; expected ${expectedCols}.`
+      );
+    }
+
+    return tokens.map((token, colIndex) => {
+      if (!/^-?\d+$/.test(token)) {
+        throw new Error(
+          `Row ${rowIndex + 1}, column ${colIndex + 1} is not an integer.`
+        );
+      }
+      const numeric = Number(token);
+      if (numeric !== 0 && numeric !== 1) {
+        throw new Error(
+          `Row ${rowIndex + 1}, column ${colIndex + 1} must be 0 or 1.`
+        );
+      }
+      return numeric;
+    });
+  });
+
+  return matrix;
 }
 
 function handleCanvasClick(event) {
