@@ -28,12 +28,21 @@ class Attacker:
 
 
 @dataclass
+class Shape:
+    id: int
+    centroid_grid: Optional[np.ndarray]
+    centroid_meters: Optional[np.ndarray]
+    vertices: list[Vertex]
+
+
+@dataclass
 class GridData:
     matrix: np.ndarray
     cell_size_m: float
     centroid_grid: Optional[np.ndarray]
     centroid_meters: Optional[np.ndarray]
     shape_vertices: list[Vertex]
+    shapes: list[Shape]
     attackers: list[Attacker]
 
 
@@ -76,7 +85,40 @@ def load_grid_payload(path: str | Path) -> GridData:
     centroid_grid = _vector_from_dict(centroid.get("grid") if centroid else None, ("row", "col"))
     centroid_meters = _vector_from_dict(centroid.get("meters") if centroid else None, ("x", "y"))
 
-    vertices = [_vertex_from_dict(entry) for entry in raw.get("shapeVertices", []) or []]
+    shapes_data = raw.get("shapes")
+    shapes: list[Shape] = []
+    if shapes_data:
+        for index, entry in enumerate(shapes_data, start=1):
+            centroid_entry = entry.get("centroid") or {}
+            shape_centroid_grid = _vector_from_dict(centroid_entry.get("grid"), ("row", "col"))
+            shape_centroid_meters = _vector_from_dict(centroid_entry.get("meters"), ("x", "y"))
+            vertices = [_vertex_from_dict(vertex) for vertex in entry.get("vertices", []) or []]
+            shape_id = int(entry.get("id", index))
+            shapes.append(
+                Shape(
+                    id=shape_id,
+                    centroid_grid=shape_centroid_grid,
+                    centroid_meters=shape_centroid_meters,
+                    vertices=vertices,
+                )
+            )
+        if shapes:
+            centroid_grid = shapes[0].centroid_grid
+            centroid_meters = shapes[0].centroid_meters
+            vertices = shapes[0].vertices
+        else:
+            vertices = []
+    else:
+        vertices = [_vertex_from_dict(entry) for entry in raw.get("shapeVertices", []) or []]
+        if vertices:
+            shapes.append(
+                Shape(
+                    id=1,
+                    centroid_grid=centroid_grid,
+                    centroid_meters=centroid_meters,
+                    vertices=vertices,
+                )
+            )
 
     attackers: list[Attacker] = []
     for attacker in raw.get("attackers", []):
@@ -94,6 +136,7 @@ def load_grid_payload(path: str | Path) -> GridData:
         centroid_grid=centroid_grid,
         centroid_meters=centroid_meters,
         shape_vertices=vertices,
+        shapes=shapes,
         attackers=attackers,
     )
 
@@ -105,14 +148,17 @@ if __name__ == "__main__":
     # parser.add_argument("json_path", type=Path, help="Path to the downloaded grid JSON file")
     # args = parser.parse_args()
 
-    json_path = r'utils/grid-12x12(2).json'
+    json_path = r'utils/grid-12x12(6).json'
 
     grid = load_grid_payload(json_path)
     print(f"Matrix shape: {grid.matrix.shape}, dtype={grid.matrix.dtype}")
     print(f"Cell size (m): {grid.cell_size_m}")
     print(f"Centroid grid coords: {grid.centroid_grid}")
     print(f"Centroid meters: {grid.centroid_meters}")
-    print(f"Vertices: {len(grid.shape_vertices)}")
+    print(f"Shapes: {grid.shapes}")
+    print(f"Vertices (first shape): {len(grid.shape_vertices)}")
     print(f"Attackers: {len(grid.attackers)}")
     for attacker in grid.attackers:
         print(f"Attacker: {attacker.name}, Start: {attacker.start}, Target: {attacker.target}")
+
+    print(grid.matrix)
