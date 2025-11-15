@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Grid Shape Filler</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="app__header">
+        <h1>Grid Shape Filler</h1>
+        <p>
+          Define the size of a 2D grid, draw a closed shape, and mark cells
+          inside the shape as 0 (outside stays 1).
+        </p>
+      </header>
+
+      <section class="panel">
+        <form id="grid-form" class="panel__form">
+          <label>
+            Rows
+            <input
+              type="number"
+              id="rows-input"
+              name="rows"
+              min="2"
+              max="150"
+              value="12"
+              required
+            />
+          </label>
+          <label>
+            Columns
+            <input
+              type="number"
+              id="cols-input"
+              name="cols"
+              min="2"
+              max="150"
+              value="12"
+              required
+            />
+          </label>
+          <label>
+            Cell size (m)
+            <input
+              type="number"
+              id="cell-size-input"
+              name="cellSize"
+              min="0.1"
+              max="1000"
+              step="0.1"
+              value="1"
+              required
+            />
+          </label>
+          <button type="submit">Create grid</button>
+        </form>
+
+        <div class="panel__controls">
+          <button type="button" id="reset-shape">Reset shape</button>
+          <button type="button" id="close-shape">Close shape</button>
+          <button type="button" id="fill-grid">Fill grid</button>
+        </div>
+        <div class="panel__zoom">
+          <label for="zoom-input">Zoom</label>
+          <input
+            type="range"
+            id="zoom-input"
+            min="50"
+            max="200"
+            value="100"
+            step="5"
+          />
+          <span id="zoom-label">100%</span>
+        </div>
+        <div class="panel__metrics" aria-live="polite">
+          <div>
+            <p class="panel__metrics-label">Centroid (grid coords)</p>
+            <p id="centroid-grid" class="panel__metrics-value">—</p>
+          </div>
+          <div>
+            <p class="panel__metrics-label">Centroid (meters)</p>
+            <p id="centroid-meters" class="panel__metrics-value">—</p>
+          </div>
+        </div>
+        <p class="panel__hint">
+          Click on the canvas to add vertices that snap to the grid. Add at
+          least three points, then close the shape before filling.
+        </p>
+        <p id="status" class="panel__status" role="status"></p>
+      </section>
+
+      <section class="workspace">
+        <div class="canvas-wrapper">
+          <canvas
+            id="grid-canvas"
+            width="600"
+            height="600"
+            aria-label="Grid drawing canvas"
+          ></canvas>
+        </div>
+        <div class="workspace__side">
+          <div class="workspace__panel workspace__attackers">
+            <div class="workspace__panel-header">
+              <h2>Attackers</h2>
+              <p>Assign start/target cells for each attacker.</p>
+            </div>
+            <div class="attacker__controls">
+              <label class="attacker__select">
+                Active attacker
+                <select id="attacker-select" aria-label="Choose attacker"></select>
+              </label>
+              <div class="attacker__buttons">
+                <button type="button" id="add-attacker">Add</button>
+                <button type="button" id="remove-attacker">Remove</button>
+              </div>
+            </div>
+            <div class="attacker__actions">
+              <button type="button" id="assign-start">Assign start cell</button>
+              <button type="button" id="assign-target">Assign target cell</button>
+            </div>
+            <p class="panel__hint">
+              Activate a mode and click a grid cell to set the start or target.
+            </p>
+            <ul id="attacker-list" class="attacker-list"></ul>
+          </div>
+
+          <div class="workspace__panel workspace__export">
+            <div class="workspace__panel-header">
+              <h2>Export to Python</h2>
+              <p>Copy ready-to-use numpy matrix + attacker tuples.</p>
+            </div>
+            <div class="export__buttons">
+              <button type="button" id="copy-python">Copy Python snippet</button>
+              <button type="button" id="download-json">Download JSON</button>
+            </div>
+            <textarea
+              id="python-preview"
+              rows="12"
+              spellcheck="false"
+              readonly
+              aria-label="Python preview"
+            >No grid yet. Create and fill a grid to see the snippet.</textarea>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="./main.js" type="module"></script>
+  </body>
+</html>
+
