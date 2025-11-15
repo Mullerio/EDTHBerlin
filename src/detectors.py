@@ -1,5 +1,6 @@
 import configs.detector_configs as detector_configs
 import numpy as np
+from scipy.optimize import minimize
 
 class Detector:
     def __init__(self, type: detector_configs.DetectorType, position: tuple):
@@ -184,5 +185,358 @@ def set_nonobservable_triangle(sector_env, triangle_corners: tuple, physical_coo
                 except Exception:
                     # best-effort: if mask not present or indexing fails, skip
                     continue
-            
 
+
+def compute_coverage_map(detector_positions, detector_config, grid_shape, cell_size=1.0):
+    """
+    Compute the combined probability coverage map for given detector positions.
+    
+    Parameters:
+    - detector_positions: List of (x, y) tuples in physical coordinates (meters)
+    - detector_config: A detector configuration object with a probability() method
+    - grid_shape: (height, width) of the grid
+    - cell_size: Size of each grid cell in physical units (meters)
+    
+    Returns:
+    - coverage_map: 2D array of shape grid_shape with combined probabilities
+    
+    The combined probability uses the probabilistic OR formula:
+    P(detected by at least one) = 1 - prod(1 - P(detected by i))
+    """
+    height, width = grid_shape
+    coverage_map = np.zeros((height, width), dtype=float)
+    
+    if len(detector_positions) == 0:
+        return coverage_map
+    
+    # Create grid of cell centers in physical coordinates
+    y_coords, x_coords = np.meshgrid(
+        np.arange(height) * cell_size + cell_size / 2,
+        np.arange(width) * cell_size + cell_size / 2,
+        indexing='ij'
+    )
+    
+    # Compute combined probability using probabilistic OR
+    # P(at least one detects) = 1 - P(none detect) = 1 - prod(1 - p_i)
+    prob_none_detect = np.ones((height, width), dtype=float)
+    
+    for det_x, det_y in detector_positions:
+        # Compute distances from this detector to all grid cells
+        distances = np.sqrt((x_coords - det_x)**2 + (y_coords - det_y)**2)
+        
+        # Get detection probabilities
+        probs = detector_config.probability(distances)
+        
+        # Update combined probability
+        prob_none_detect *= (1.0 - probs)
+    
+    coverage_map = 1.0 - prob_none_detect
+    
+    return coverage_map
+
+
+def evaluate_coverage(detector_positions, area_grid, detector_config, cell_size=1.0, 
+                     coverage_threshold=0.5):
+    """
+    Evaluate the quality of detector placement.
+    
+    Parameters:
+    - detector_positions: List of (x, y) tuples in physical coordinates
+    - area_grid: 2D array where 0 indicates area to cover, 1 indicates outside area
+    - detector_config: A detector configuration object
+    - cell_size: Size of each grid cell in physical units (meters)
+    - coverage_threshold: Minimum probability to consider a cell "covered"
+    
+    Returns:
+    - score: Dictionary with various coverage metrics
+    """
+    grid_shape = area_grid.shape
+    coverage_map = compute_coverage_map(detector_positions, detector_config, 
+                                       grid_shape, cell_size)
+    
+    # Mask for area to cover (where area_grid == 0)
+    target_mask = (area_grid == 0)
+    
+    if not np.any(target_mask):
+        return {
+            'mean_coverage': 0.0,
+            'min_coverage': 0.0,
+            'fraction_covered': 0.0,
+            'total_coverage': 0.0
+        }
+    
+    # Extract coverage values only for target area
+    target_coverage = coverage_map[target_mask]
+    
+    # Compute metrics
+    mean_coverage = np.mean(target_coverage)
+    min_coverage = np.min(target_coverage)
+    fraction_covered = np.mean(target_coverage >= coverage_threshold)
+    total_coverage = np.sum(target_coverage)
+    
+    return {
+        'mean_coverage': mean_coverage,
+        'min_coverage': min_coverage,
+        'fraction_covered': fraction_covered,
+        'total_coverage': total_coverage,
+        'coverage_map': coverage_map
+    }
+
+
+def optimize_detector_positions_greedy(area_grid, n_detectors, detector_config, 
+                                      cell_size=1.0, n_candidates=100):
+    """
+    Use a greedy algorithm to find good detector positions.
+    
+    Places detectors one at a time, each time choosing the position that
+    maximally improves coverage of the target area.
+    
+    Parameters:
+    - area_grid: 2D array where 0 indicates area to cover, 1 indicates outside
+    - n_detectors: Number of detectors to place
+    - detector_config: A detector configuration object
+    - cell_size: Size of each grid cell in physical units (meters)
+    - n_candidates: Number of candidate positions to evaluate at each step
+    
+    Returns:
+    - positions: List of (x, y) tuples in physical coordinates
+    """
+    height, width = area_grid.shape
+    target_mask = (area_grid == 0)
+    
+    if not np.any(target_mask):
+        print("Warning: No target area found (no zeros in area_grid)")
+        return []
+    
+    # Get coordinates of target cells
+    target_coords = np.argwhere(target_mask)  # Returns (row, col) pairs
+    
+    # Convert to physical coordinates (center of cells)
+    target_physical = np.column_stack([
+        target_coords[:, 1] * cell_size + cell_size / 2,  # x (col)
+        target_coords[:, 0] * cell_size + cell_size / 2   # y (row)
+    ])
+    
+    positions = []
+    
+    # Create grid of cell centers for coverage computation
+    y_coords, x_coords = np.meshgrid(
+        np.arange(height) * cell_size + cell_size / 2,
+        np.arange(width) * cell_size + cell_size / 2,
+        indexing='ij'
+    )
+    
+    # Track cumulative "probability none detect"
+    prob_none_detect = np.ones((height, width), dtype=float)
+    
+    for i in range(n_detectors):
+        best_position = None
+        best_score = -np.inf
+        
+        # Generate candidate positions (sample from target area + some random)
+        if len(target_physical) > n_candidates:
+            candidate_indices = np.random.choice(len(target_physical), 
+                                                size=n_candidates, replace=False)
+            candidates = target_physical[candidate_indices]
+        else:
+            candidates = target_physical.copy()
+        
+        # Evaluate each candidate
+        for cand_x, cand_y in candidates:
+            # Compute distances from this candidate to all grid cells
+            distances = np.sqrt((x_coords - cand_x)**2 + (y_coords - cand_y)**2)
+            
+            # Get detection probabilities
+            probs = detector_config.probability(distances)
+            
+            # Compute new combined probability if we add this detector
+            new_prob_none = prob_none_detect * (1.0 - probs)
+            new_coverage = 1.0 - new_prob_none
+            
+            # Score: focus on improving coverage in target area
+            target_coverage = new_coverage[target_mask]
+            score = np.sum(target_coverage)  # Total coverage in target area
+            
+            if score > best_score:
+                best_score = score
+                best_position = (cand_x, cand_y)
+        
+        if best_position is not None:
+            positions.append(best_position)
+            
+            # Update cumulative coverage
+            det_x, det_y = best_position
+            distances = np.sqrt((x_coords - det_x)**2 + (y_coords - det_y)**2)
+            probs = detector_config.probability(distances)
+            prob_none_detect *= (1.0 - probs)
+            
+            current_coverage = 1.0 - prob_none_detect
+            mean_cov = np.mean(current_coverage[target_mask])
+            print(f"Placed detector {i+1}/{n_detectors} at ({det_x:.1f}, {det_y:.1f}), "
+                  f"mean coverage: {mean_cov:.3f}")
+    
+    return positions
+
+
+def optimize_detector_positions_refined(area_grid, n_detectors, detector_config,
+                                       cell_size=1.0, initial_positions=None,
+                                       max_iterations=50):
+    """
+    Refine detector positions using local optimization.
+    
+    Uses gradient-free optimization (Nelder-Mead) to improve detector placement.
+    
+    Parameters:
+    - area_grid: 2D array where 0 indicates area to cover
+    - n_detectors: Number of detectors
+    - detector_config: A detector configuration object
+    - cell_size: Size of each grid cell in physical units (meters)
+    - initial_positions: Starting positions (if None, uses greedy initialization)
+    - max_iterations: Maximum optimization iterations
+    
+    Returns:
+    - positions: List of (x, y) tuples in physical coordinates
+    """
+    height, width = area_grid.shape
+    target_mask = (area_grid == 0)
+    
+    # Create grid of cell centers
+    y_coords, x_coords = np.meshgrid(
+        np.arange(height) * cell_size + cell_size / 2,
+        np.arange(width) * cell_size + cell_size / 2,
+        indexing='ij'
+    )
+    
+    # Get initial positions
+    if initial_positions is None:
+        print("Running greedy initialization...")
+        initial_positions = optimize_detector_positions_greedy(
+            area_grid, n_detectors, detector_config, cell_size
+        )
+    
+    if len(initial_positions) == 0:
+        return []
+    
+    # Flatten positions for optimization
+    x0 = np.array(initial_positions).flatten()
+    
+    # Define objective function (negative because we minimize)
+    def objective(positions_flat):
+        positions = positions_flat.reshape(-1, 2)
+        
+        # Compute coverage
+        prob_none_detect = np.ones((height, width), dtype=float)
+        
+        for det_x, det_y in positions:
+            distances = np.sqrt((x_coords - det_x)**2 + (y_coords - det_y)**2)
+            probs = detector_config.probability(distances)
+            prob_none_detect *= (1.0 - probs)
+        
+        coverage_map = 1.0 - prob_none_detect
+        
+        # Score: maximize mean coverage in target area, penalize low min coverage
+        target_coverage = coverage_map[target_mask]
+        mean_cov = np.mean(target_coverage)
+        min_cov = np.min(target_coverage)
+        
+        # Objective: maximize mean + weight for min coverage
+        score = mean_cov + 0.2 * min_cov
+        
+        return -score  # Negative because we minimize
+    
+    # Define bounds (keep detectors within grid)
+    bounds = []
+    for _ in range(n_detectors):
+        bounds.append((0, width * cell_size))  # x bounds
+        bounds.append((0, height * cell_size))  # y bounds
+    
+    print(f"\nRefining positions with local optimization...")
+    
+    # Optimize
+    result = minimize(
+        objective,
+        x0,
+        method='L-BFGS-B',
+        bounds=bounds,
+        options={'maxiter': max_iterations, 'disp': False}
+    )
+    
+    # Extract optimized positions
+    optimized_positions = result.x.reshape(-1, 2)
+    positions_list = [(float(x), float(y)) for x, y in optimized_positions]
+    
+    return positions_list
+
+
+def optimize_detector_positions(area_grid, n_detectors, detector_config=None,
+                                cell_size=1.0, method='greedy+refine',
+                                detector_type=None):
+    """
+    Find optimal positions for detectors to cover a target area.
+    
+    Parameters:
+    - area_grid: 2D numpy array where 0 indicates area to cover, 1 indicates outside
+    - n_detectors: Number of detectors to place
+    - detector_config: Detector configuration object (if None, uses VisualDetectorConfig)
+    - cell_size: Physical size of each grid cell in meters (default: 1.0)
+    - method: Optimization method:
+        * 'greedy': Fast greedy algorithm
+        * 'refined': Greedy + local optimization (slower but better)
+        * 'greedy+refine': Alias for 'refined' (default)
+    - detector_type: DetectorType enum (used if detector_config is None)
+    
+    Returns:
+    - positions: List of (x, y) tuples in physical coordinates (meters)
+    - metrics: Dictionary with coverage metrics
+    
+    Example:
+    >>> area = np.ones((100, 100))
+    >>> area[20:80, 20:80] = 0  # Define area to cover
+    >>> positions, metrics = optimize_detector_positions(area, n_detectors=5, cell_size=10.0)
+    >>> print(f"Mean coverage: {metrics['mean_coverage']:.2%}")
+    """
+    # Get detector config
+    if detector_config is None:
+        if detector_type is None:
+            detector_type = detector_configs.DetectorType.VISUAL
+        
+        if detector_type == detector_configs.DetectorType.VISUAL:
+            detector_config = detector_configs.VisualDetectorConfig()
+        elif detector_type == detector_configs.DetectorType.RADAR:
+            detector_config = detector_configs.RadarDetectorConfig()
+        elif detector_type == detector_configs.DetectorType.ACOUSTIC:
+            detector_config = detector_configs.AcousticDetectorConfig()
+        else:
+            detector_config = detector_configs.BaseConfig()
+    
+    # Validate inputs
+    if not isinstance(area_grid, np.ndarray) or area_grid.ndim != 2:
+        raise ValueError("area_grid must be a 2D numpy array")
+    
+    if n_detectors <= 0:
+        return [], {'mean_coverage': 0.0, 'min_coverage': 0.0, 
+                   'fraction_covered': 0.0, 'total_coverage': 0.0}
+    
+    # Choose optimization method
+    if method in ['greedy']:
+        positions = optimize_detector_positions_greedy(
+            area_grid, n_detectors, detector_config, cell_size
+        )
+    elif method in ['refined', 'greedy+refine']:
+        positions = optimize_detector_positions_refined(
+            area_grid, n_detectors, detector_config, cell_size
+        )
+    else:
+        raise ValueError(f"Unknown method: {method}. Use 'greedy' or 'refined'")
+    
+    # Evaluate final coverage
+    metrics = evaluate_coverage(positions, area_grid, detector_config, cell_size)
+    
+    print(f"\n{'='*60}")
+    print(f"Optimization complete:")
+    print(f"  Mean coverage: {metrics['mean_coverage']:.2%}")
+    print(f"  Min coverage: {metrics['min_coverage']:.2%}")
+    print(f"  Fraction above 50%: {metrics['fraction_covered']:.2%}")
+    print(f"{'='*60}\n")
+    
+    return positions, metrics
