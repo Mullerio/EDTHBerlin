@@ -8,16 +8,18 @@ from src.targets import *
 
 
 class Environment:
-    def __init__(self, width, height, target : TargetDistribution, cell_size=1.0): 
+    def __init__(self, width, height, target: TargetDistribution = None, cell_size=1.0, attackers=None): 
         """
         Initialize environment.
         
         Args:
             width: number of grid cells in x direction (integer)
             height: number of grid cells in y direction (integer)
-            target: target probability distribution (operates in physical coordinates)
+            target: target probability distribution (operates in physical coordinates) - OPTIONAL
+                   If not provided, attackers must specify their own targets
             cell_size: physical size of each grid cell in meters (default 1.0)
                       Physical coordinates range: x ∈ [0, width*cell_size), y ∈ [0, height*cell_size)
+            attackers: optional list of Attacker objects to add at initialization
         
         The grid is only used for:
         - Selecting non-observable regions (via mask from UI)
@@ -35,7 +37,7 @@ class Environment:
         self.def_drones = []
         self.detectors = []
         
-        self.target = target
+        self.target = target  # Optional - can be None if attackers have individual targets
         
         # Grid for visualization only - create sampling points in physical coordinates
         x = np.linspace(0, self.width * self.cell_size, self.width)
@@ -45,11 +47,16 @@ class Environment:
         self.grid = np.stack([xx.ravel(), yy.ravel()], axis=1)
         
         # Probability map for visualization only (not used in detection logic)
-        self.prob_map = self._generate_prob_map()
+        self.prob_map = self._generate_prob_map() if target is not None else np.ones((self.height, self.width))
         
         # Observable mask: grid-based boolean array for UI region selection
         # mask[j, i] corresponds to physical region [i*cell_size, (i+1)*cell_size) x [j*cell_size, (j+1)*cell_size)
         self.observable_mask = np.ones((self.height, self.width), dtype=bool)
+        
+        # Add attackers if provided at initialization
+        if attackers is not None:
+            for attacker in attackers:
+                self.add_atk_drone(attacker)
         
     def set_subgrid_unobservable(self, x0, y0, w, h):
         """
@@ -72,7 +79,12 @@ class Environment:
         """
         Generate probability map over the grid based on the target distribution.
         Returns: shape [width, height]
+        
+        If no target distribution is provided, returns uniform probability map.
         """
+        if self.target is None:
+            # No target distribution - return uniform map
+            return np.ones((self.height, self.width)) / (self.height * self.width)
         
         # Evaluate log density at all grid points
         log_probs = self.target.log_prob(self.grid)  #[width*height, 1]
@@ -325,20 +337,22 @@ class SectorEnv(Environment):
     3. Place detectors strategically in non-observable zones
     """
     
-    def __init__(self, width, height, target: TargetDistribution, 
-                 default_observable=True, cell_size=1.0):
+    def __init__(self, width, height, target: TargetDistribution = None, 
+                 default_observable=True, cell_size=1.0, attackers=None):
         """
         Initialize sector environment.
         
         Args:
             width: number of grid cells in x direction (integer)
             height: number of grid cells in y direction (integer)
-            target: target probability distribution (operates in physical meters)
+            target: target probability distribution (operates in physical meters) - OPTIONAL
+                   If not provided, attackers must specify their own targets
             default_observable: if True, entire grid starts as observable (then mark subgrids as non-observable)
                                if False, entire grid starts as non-observable (then mark subgrids as observable)
             cell_size: physical size of each grid cell in meters (default 1.0)
+            attackers: optional list of Attacker objects to add at initialization
         """
-        super().__init__(width, height, target, cell_size=cell_size)
+        super().__init__(width, height, target, cell_size=cell_size, attackers=attackers)
         
         # Override observable mask based on default
         if default_observable:

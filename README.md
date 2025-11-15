@@ -15,3 +15,9 @@ What always happens: User chooses grid shape thats radar occluded
 2. "complete analysis" i.e. randomly generate attackers from all angles, they either fly straight through the shape or also via midpoint 
 
 for presentation, do 1, choose detector based on their distributions in "optimal" way.
+
+
+Simulation:
+- midpoint for trajectory 
+- also have option to incorperate time outside of non visible grid -> present both? 
+- make function that takes everything from website, how to?

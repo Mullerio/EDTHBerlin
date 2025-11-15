@@ -111,5 +111,8 @@ class RadarDetectorConfig:
         if np.ndim(distance) == 0:
             return float(p)
         return p
+    
+
+
 
 

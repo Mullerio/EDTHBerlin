@@ -12,9 +12,12 @@ class Attacker:
     to a target position in a given number of steps.
     
     If target_position is None, it will be sampled from target_distribution.
+    Optionally, waypoints can be specified to create a multi-segment path:
+    - Single waypoint: start -> waypoint -> target
+    - Multiple waypoints: start -> waypoint1 -> waypoint2 -> ... -> target
     """
 
-    def __init__(self, start_position:tuple, target_position: tuple = None, steps: int = 10, target_distribution = None, noise_std: float = 0.0, speed : float = 0.0, speed_noise: float = 0.0):
+    def __init__(self, start_position:tuple, target_position: tuple = None, steps: int = 10, target_distribution = None, noise_std: float = 0.0, speed : float = 0.0, speed_noise: float = 0.0, waypoint: tuple = None, waypoints: list = None):
         self.start_position = start_position
 
         # Sample target from distribution if not provided
@@ -32,13 +35,27 @@ class Attacker:
         self.noise_std = noise_std
         self.speed = speed   
         self.speed_noise = speed_noise
+        
+        # Support both single waypoint and list of waypoints
+        if waypoints is not None:
+            # Use list of waypoints
+            self.waypoints = waypoints
+        elif waypoint is not None:
+            # Convert single waypoint to list for consistency
+            self.waypoints = [waypoint]
+        else:
+            self.waypoints = None
 
         self.trajectory = self.generate_trajectory()
 
     def generate_trajectory(self):
         """
         Generate a linear trajectory from start to target.
-
+        
+        If waypoints are specified, generates a multi-segment path:
+        - Single waypoint: start -> waypoint -> target
+        - Multiple waypoints: start -> wp1 -> wp2 -> ... -> target
+        
         If `self.speed` > 0, sample positions at 1-second intervals along the
         straight-line path from start to target: traj[0] is start (t=0),
         traj[1] is position after 1s, etc., and the final element is the target
@@ -48,6 +65,10 @@ class Attacker:
         If `self.speed` <= 0, fall back to the legacy behavior of producing
         `self.steps` evenly spaced waypoints along the line.
         """
+        # If waypoints are specified, generate trajectory with waypoints
+        if self.waypoints is not None and len(self.waypoints) > 0:
+            return self._generate_trajectory_with_waypoints()
+        
         start = np.asarray(self.start_position, dtype=float)
         target = np.asarray(self.target_position, dtype=float)
         diff = target - start
@@ -131,6 +152,136 @@ class Attacker:
 
         return trajectory
 
+    def _generate_trajectory_with_waypoints(self):
+        """
+        Generate a multi-segment trajectory through all waypoints.
+        
+        Path: start -> waypoint1 -> waypoint2 -> ... -> target
+        
+        Uses the same logic as generate_trajectory but applies it to each segment.
+        Each waypoint is included exactly once at the junction between segments.
+        """
+        # Build the complete path: start -> waypoints -> target
+        path_points = [np.asarray(self.start_position, dtype=float)]
+        
+        # Add all waypoints
+        for wp in self.waypoints:
+            path_points.append(np.asarray(wp, dtype=float))
+        
+        # Add final target
+        path_points.append(np.asarray(self.target_position, dtype=float))
+        
+        # Generate trajectory through all segments
+        combined_trajectory = []
+        
+        for i in range(len(path_points) - 1):
+            segment_start = path_points[i]
+            segment_end = path_points[i + 1]
+            
+            # Generate segment
+            segment = self._generate_segment(segment_start, segment_end, include_endpoint=True)
+            
+            # Add segment to combined trajectory
+            if i == 0:
+                # First segment: include all points
+                combined_trajectory.extend(segment)
+            else:
+                # Later segments: skip first point (already included from previous segment)
+                combined_trajectory.extend(segment[1:])
+        
+        return combined_trajectory
+    
+    def _generate_segment(self, start_pos, end_pos, include_endpoint=True):
+        """
+        Generate trajectory segment between two points using current speed/noise settings.
+        
+        Args:
+            start_pos: Starting position as numpy array
+            end_pos: Ending position as numpy array
+            include_endpoint: Whether to include the exact endpoint
+            
+        Returns:
+            List of trajectory points (tuples)
+        """
+        start = np.asarray(start_pos, dtype=float)
+        end = np.asarray(end_pos, dtype=float)
+        diff = end - start
+        dist = np.linalg.norm(diff)
+        
+        # If start equals end, return just the point
+        if dist == 0.0:
+            return [tuple(start.tolist())]
+        
+        # Speed-based trajectory generation
+        if self.speed is not None and self.speed > 0.0:
+            pos = start.copy()
+            remaining = dist
+            trajectory = [tuple(pos.tolist())]
+            
+            # Safety cap
+            nominal_steps = max(1, int(np.ceil(dist / max(1e-8, self.speed))))
+            max_steps = max(1000, nominal_steps * 10)
+            
+            steps_taken = 0
+            while remaining > 1e-8 and steps_taken < max_steps:
+                # Sample effective speed for this 1-second interval
+                if self.speed_noise > 0.0:
+                    eff_speed = float(np.random.normal(loc=self.speed, scale=self.speed_noise))
+                else:
+                    eff_speed = float(self.speed)
+                
+                # Clamp to non-negative
+                if eff_speed <= 0.0:
+                    eff_speed = 0.0
+                
+                move_dist = eff_speed * 1.0  # dt = 1s
+                
+                if move_dist <= 0.0:
+                    break
+                
+                # Move towards end
+                travel = min(move_dist, remaining)
+                direction = diff / (np.linalg.norm(diff) + 1e-12)
+                pos = pos + direction * travel
+                remaining = np.linalg.norm(end - pos)
+                trajectory.append(tuple(pos.tolist()))
+                
+                # Update diff for direction recalculation
+                diff = end - pos
+                steps_taken += 1
+            
+            # Ensure final point is the exact endpoint if requested
+            if include_endpoint and tuple(trajectory[-1]) != tuple(end.tolist()):
+                trajectory.append(tuple(end.tolist()))
+            
+            # Add Gaussian noise to intermediate points (not start/end)
+            if self.noise_std > 0.0:
+                for idx in range(1, len(trajectory) - 1):
+                    pos_arr = np.array(trajectory[idx], dtype=float)
+                    noise = np.random.normal(loc=0.0, scale=self.noise_std, size=pos_arr.shape)
+                    pos_arr = pos_arr + noise
+                    trajectory[idx] = tuple(pos_arr.tolist())
+            
+            return trajectory
+        
+        # Legacy fallback: evenly spaced samples using self.steps
+        # Divide steps proportionally to segment length (for multi-segment paths)
+        if self.steps == 1:
+            return [tuple(start.tolist())]
+        
+        trajectory = []
+        for i in range(self.steps):
+            t = i / (self.steps - 1)
+            pos = start + t * diff
+            if 0 < i < (self.steps - 1) and self.noise_std > 0.0:
+                pos_arr = np.array(pos, dtype=float)
+                noise = np.random.normal(loc=0.0, scale=self.noise_std, size=pos_arr.shape)
+                pos_arr = pos_arr + noise
+                pos = pos_arr
+            trajectory.append(tuple(pos.tolist()))
+        
+        return trajectory
+
     def get_trajectory(self):
         if self.trajectory is None:
             raise ValueError("Trajectory not generated")
@@ -148,6 +299,7 @@ class AttackerSwarm:
     - One or more `target_positions` can be provided; if there are multiple,
       they are distributed evenly between the attackers (round‑robin).
     - Alternatively, provide `target_distribution` to sample targets from a distribution.
+    - Supports waypoints: single waypoint or ordered list of waypoints for all attackers
     """
 
     def __init__(
@@ -158,6 +310,8 @@ class AttackerSwarm:
         spread: float = 0.0,
         target_distribution = None,
         noise_std: float = 0.0,
+        waypoint = None,
+        waypoints = None,
     ):
         if number_of_attackers < 1:
             raise ValueError("number_of_attackers must be at least 1")
@@ -171,6 +325,14 @@ class AttackerSwarm:
         self.spread: float = spread
         self.target_distribution = target_distribution
         self.noise_std = float(noise_std)
+        
+        # Support both single waypoint and list of waypoints
+        if waypoints is not None:
+            self.waypoints = waypoints
+        elif waypoint is not None:
+            self.waypoints = [waypoint]
+        else:
+            self.waypoints = None
 
     def _sample_start_around_center(self):
         """
@@ -209,6 +371,7 @@ class AttackerSwarm:
         - Starts at a position sampled around `start_position` (controlled by `spread`).
         - Is assigned a target chosen from `target_positions` (round-robin), or 
           sampled from `target_distribution` if provided.
+        - Optionally flies through waypoint(s) if specified.
         """
         swarm: List[Attacker] = []
 
@@ -223,6 +386,7 @@ class AttackerSwarm:
                 noise_std=self.noise_std,
                 speed=speed,
                 speed_noise=speed_noise,
+                waypoints=self.waypoints,
             ))
 
         return swarm
