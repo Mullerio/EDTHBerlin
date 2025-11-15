@@ -110,6 +110,26 @@ body {
   border-color: var(--accent);
 }
 
+.panel__import {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.panel__import button {
+  align-self: flex-start;
+  padding: 0.5rem 0.85rem;
+  border-radius: 0.5rem;
+  border: 1px dashed var(--border);
+  background: color-mix(in srgb, Canvas 92%, var(--accent) 8%);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.panel__import button:hover {
+  background: color-mix(in srgb, Canvas 85%, var(--accent) 15%);
+}
+
 .panel__metrics {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

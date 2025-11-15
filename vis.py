@@ -253,24 +253,24 @@ def _build_coverage_matrix(
         for zone in zones
     ]
 
-    matrix = np.zeros((GRID_CELLS_PER_SIDE, GRID_CELLS_PER_SIDE), dtype=np.uint8)
+    # Default to 1 (outside of target / already observable). We'll mark occluded
+    # cells inside the radar coverage circle with 0s when we detect a dead zone.
+    matrix = np.ones((GRID_CELLS_PER_SIDE, GRID_CELLS_PER_SIDE), dtype=np.uint8)
     for row, cell_center_y in enumerate(GRID_CELL_CENTERS_PX):
         dy_px = cell_center_y - radar_y
         for col, cell_center_x in enumerate(GRID_CELL_CENTERS_PX):
             dx_px = cell_center_x - radar_x
             distance_km = math.hypot(dx_px, dy_px) * KM_PER_PX
             if distance_km > range_km:
+                matrix[row, col] = 1
                 continue
             angle = math.atan2(-dy_px, dx_px)
-            blocked = False
             for zone in simplified_zones:
                 if distance_km < zone["distance_km"]:
                     continue
                 if _angle_in_interval(angle, zone["start"], zone["end"]):
-                    blocked = True
+                    matrix[row, col] = 0
                     break
-            if not blocked:
-                matrix[row, col] = 1
     return matrix
 
 
