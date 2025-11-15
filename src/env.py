@@ -587,6 +587,50 @@ class SectorEnv(Environment):
         
         return ax
     
+    def visualize_trajectories(self, figsize=(6, 6), ax=None, show=True, show_heatmap=True, show_sectors=True):
+        """
+        Visualize attacker trajectories.
+        EXACT same approach as visualize_trajectory_analysis left plot.
+        """
+        created_fig = False
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+            created_fig = True
+
+        # EXACT same as visualize_trajectory_analysis: call visualize first
+        self.visualize(ax=ax, show=False, show_sectors=show_sectors)
+        
+        # EXACT same as visualize_trajectory_analysis: plot trajectories
+        first_attacker = True
+        for attacker in self.atk_drones:
+            if hasattr(attacker, 'trajectory') and attacker.trajectory:
+                traj_arr = np.array(attacker.trajectory)
+                # Simple blue line - EXACT same as visualize_trajectory_analysis
+                # Only label the first attacker to avoid duplicate legend entries
+                if first_attacker:
+                    ax.plot(traj_arr[:, 0], traj_arr[:, 1], 'b-', linewidth=2, label='Trajectory', zorder=10)
+                    ax.plot(traj_arr[0, 0], traj_arr[0, 1], 'go', markersize=10, label='Start', zorder=11)
+                    ax.plot(traj_arr[-1, 0], traj_arr[-1, 1], 'rx', markersize=12, label='Target', zorder=11)
+                    first_attacker = False
+                else:
+                    ax.plot(traj_arr[:, 0], traj_arr[:, 1], 'b-', linewidth=2, zorder=10)
+                    ax.plot(traj_arr[0, 0], traj_arr[0, 1], 'go', markersize=10, zorder=11)
+                    ax.plot(traj_arr[-1, 0], traj_arr[-1, 1], 'rx', markersize=12, zorder=11)
+
+        ax.set_title('Attacker Trajectories')
+        
+        # Filter out 'attack' from legend (redundant with 'Start' markers)
+        handles, labels = ax.get_legend_handles_labels()
+        filtered = [(h, l) for h, l in zip(handles, labels) if l != 'attack']
+        if filtered:
+            handles, labels = zip(*filtered)
+            ax.legend(handles, labels, loc='upper right')
+
+        if show:
+            plt.show()
+        
+        return ax
+    
     def visualize_trajectory_analysis(self, attacker, figsize=(12, 5)):
         """
         Visualize trajectory with detection probability analysis.

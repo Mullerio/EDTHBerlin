@@ -8,11 +8,11 @@ class Detector:
         
         if type == detector_configs.DetectorType.RADAR:
             self.config = detector_configs.RadarDetectorConfig()
-        if type == detector_configs.DetectorType.ACOUSTIC:
+        elif type == detector_configs.DetectorType.ACOUSTIC:
             self.config = detector_configs.AcousticDetectorConfig()
-        if type == detector_configs.DetectorType.VISUAL:
+        elif type == detector_configs.DetectorType.VISUAL:
             self.config = detector_configs.VisualDetectorConfig()
-        if type == detector_configs.DetectorType.RADIO:
+        elif type == detector_configs.DetectorType.RADIO:
             self.config = detector_configs.RadioDetectorConfig()
         else:
             self.config = detector_configs.BaseConfig()
