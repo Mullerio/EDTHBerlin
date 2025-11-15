@@ -8,32 +8,59 @@ from src.targets import *
 
 
 class Environment:
-    def __init__(self, width, height, target : TargetDistribution): 
-        self.width = width
-        self.height = height
+    def __init__(self, width, height, target : TargetDistribution, cell_size=1.0): 
+        """
+        Initialize environment.
+        
+        Args:
+            width: number of grid cells in x direction (integer)
+            height: number of grid cells in y direction (integer)
+            target: target probability distribution (operates in physical coordinates)
+            cell_size: physical size of each grid cell in meters (default 1.0)
+                      Physical coordinates range: x ∈ [0, width*cell_size), y ∈ [0, height*cell_size)
+        
+        The grid is only used for:
+        - Selecting non-observable regions (via mask from UI)
+        - Checking if a point is observable (grid-based lookup)
+        - Optional visualization (prob_map heatmap)
+        
+        All detection, trajectory, and probability computations operate on continuous
+        physical coordinates (meters) independent of grid resolution.
+        """
+        self.width = width  # number of cells
+        self.height = height  # number of cells
+        self.cell_size = cell_size  # meters per cell
         
         self.atk_drones = []
         self.def_drones = []
         self.detectors = []
         
         self.target = target
-        x = np.linspace(0, self.width, self.width)
-        y = np.linspace(0, self.height, self.height)
+        
+        # Grid for visualization only - create sampling points in physical coordinates
+        x = np.linspace(0, self.width * self.cell_size, self.width)
+        y = np.linspace(0, self.height * self.cell_size, self.height)
         xx, yy = np.meshgrid(x, y)
         
         self.grid = np.stack([xx.ravel(), yy.ravel()], axis=1)
         
+        # Probability map for visualization only (not used in detection logic)
         self.prob_map = self._generate_prob_map()
         
-        #what part of the grid our radar can pick 
+        # Observable mask: grid-based boolean array for UI region selection
+        # mask[j, i] corresponds to physical region [i*cell_size, (i+1)*cell_size) x [j*cell_size, (j+1)*cell_size)
         self.observable_mask = np.ones((self.height, self.width), dtype=bool)
         
     def set_subgrid_unobservable(self, x0, y0, w, h):
         """
         Mark a rectangular subgrid as unobservable.
-        Coordinates are in the same units as width,height and map (x from 0..width-1, y from 0..height-1).
+        
+        Args:
+            x0, y0: bottom-left corner in grid cell indices (integer)
+            w, h: width and height in grid cells (integer)
+        
         This sets observable_mask[y0:y0+h, x0:x0+w] = False (clamped to grid).
-        TODO: more complicated shapes! 
+        Note: x0, y0, w, h are in grid cell units, not physical meters.
         """
         x0i = max(0, int(round(x0)))
         y0i = max(0, int(round(y0)))
@@ -78,8 +105,8 @@ class Environment:
         - defensive drones: green
         - detectors: blue
 
-        Assumes each drone has a `position` attribute with (x, y) coordinates
-        in the same coordinate system used by `self.grid` (i.e., x in [0,width], y in [0,height]).
+        All positions are in physical coordinates (meters).
+        The heatmap extent matches the physical dimensions: [0, width*cell_size) x [0, height*cell_size).
         """
         # Ensure prob_map has shape (height, width)
         prob = self.prob_map
@@ -89,8 +116,10 @@ class Environment:
             fig, ax = plt.subplots(figsize=figsize)
             created_fig = True
 
-        # Show heatmap; use origin='lower' so coords match (0,0) at bottom-left
-        im = ax.imshow(prob, origin='lower', extent=(0, self.width, 0, self.height), cmap='hot', aspect='auto')
+        # Show heatmap; extent in physical coordinates (meters)
+        physical_width = self.width * self.cell_size
+        physical_height = self.height * self.cell_size
+        im = ax.imshow(prob, origin='lower', extent=(0, physical_width, 0, physical_height), cmap='hot', aspect='auto')
 
         def _plot_list(drone_list, color, label):
             if len(drone_list) == 0:
@@ -151,15 +180,15 @@ class Environment:
 
             # Reshape to image and overlay on the same extent as the heatmap
             rgba = colors.reshape(self.height, self.width, 4)
-            ax.imshow(rgba, origin='lower', extent=(0, self.width, 0, self.height), zorder=5)
+            ax.imshow(rgba, origin='lower', extent=(0, physical_width, 0, physical_height), zorder=5)
 
-            # Draw detector radius outline if available
+            # Draw detector radius outline if available (in physical coordinates)
             if r is not None:
                 circ = Circle((cx, cy), r, edgecolor='blue', facecolor='none', linestyle='--', linewidth=1)
                 ax.add_patch(circ)
 
-        ax.set_xlim(0, self.width)
-        ax.set_ylim(0, self.height)
+        ax.set_xlim(0, physical_width)
+        ax.set_ylim(0, physical_height)
         ax.set_xlabel('X')
         ax.set_ylabel('Y')
         ax.legend(loc='upper right')
@@ -176,16 +205,21 @@ class Environment:
         - Shows the full path each attacker will take
         - Optionally displays the target probability heatmap in the background
         - Marks start positions with 'o' and target positions with 'x'
+        
+        All coordinates are in physical units (meters).
         """
         created_fig = False
         if ax is None:
             fig, ax = plt.subplots(figsize=figsize)
             created_fig = True
 
+        physical_width = self.width * self.cell_size
+        physical_height = self.height * self.cell_size
+
         # Optionally show heatmap in background
         if show_heatmap:
             prob = self.prob_map
-            im = ax.imshow(prob, origin='lower', extent=(0, self.width, 0, self.height), 
+            im = ax.imshow(prob, origin='lower', extent=(0, physical_width, 0, physical_height), 
                           cmap='hot', aspect='auto', alpha=0.6)
 
         # Plot trajectories for attackers that have trajectory attribute
@@ -244,13 +278,13 @@ class Environment:
             colors = cmap(np.clip(probs_flat, 0.0, 1.0))
             colors[:, 3] = colors[:, 3] * alpha_flat
             rgba = colors.reshape(self.height, self.width, 4)
-            ax.imshow(rgba, origin='lower', extent=(0, self.width, 0, self.height), zorder=5)
+            ax.imshow(rgba, origin='lower', extent=(0, physical_width, 0, physical_height), zorder=5)
             if r is not None:
                 circ = Circle((cx, cy), r, edgecolor='blue', facecolor='none', linestyle='--', linewidth=1)
                 ax.add_patch(circ)
 
-        ax.set_xlim(0, self.width)
-        ax.set_ylim(0, self.height)
+        ax.set_xlim(0, physical_width)
+        ax.set_ylim(0, physical_height)
         ax.set_xlabel('X')
         ax.set_ylabel('Y')
         ax.set_title('Attacker Trajectories')
@@ -278,6 +312,13 @@ class SectorEnv(Environment):
     - Observable region: fully detectable (no detector drones needed, detection probability = 1.0)
     - Non-observable region: requires detector drones with their respective detection distributions
     
+    The grid mask is ONLY used for:
+    - UI region selection (click to mark cells observable/non-observable)
+    - Checking if a continuous point (x,y) in meters falls in observable region
+    
+    All detection probabilities, trajectories, and statistics are computed continuously
+    in physical coordinates (meters) and do NOT depend on grid resolution.
+    
     Use cases:
     1. Calculate how long an attacker can fly through non-observable region before detection
     2. Compute cumulative detection probability along a trajectory
@@ -285,17 +326,19 @@ class SectorEnv(Environment):
     """
     
     def __init__(self, width, height, target: TargetDistribution, 
-                 default_observable=True):
+                 default_observable=True, cell_size=1.0):
         """
         Initialize sector environment.
         
         Args:
-            width, height: grid dimensions
-            target: target probability distribution
+            width: number of grid cells in x direction (integer)
+            height: number of grid cells in y direction (integer)
+            target: target probability distribution (operates in physical meters)
             default_observable: if True, entire grid starts as observable (then mark subgrids as non-observable)
                                if False, entire grid starts as non-observable (then mark subgrids as observable)
+            cell_size: physical size of each grid cell in meters (default 1.0)
         """
-        super().__init__(width, height, target)
+        super().__init__(width, height, target, cell_size=cell_size)
         
         # Override observable mask based on default
         if default_observable:
@@ -308,9 +351,12 @@ class SectorEnv(Environment):
         Set a rectangular sector's observability.
         
         Args:
-            x0, y0: bottom-left corner coordinates
-            w, h: width and height of rectangle
+            x0, y0: bottom-left corner in grid cell indices (integer)
+            w, h: width and height in grid cells (integer)
             observable: True to make region observable, False for non-observable
+        
+        Note: Coordinates are in grid cell units, not physical meters.
+        To convert from meters: grid_x = int(physical_x / cell_size)
         """
         x0i = max(0, int(round(x0)))
         y0i = max(0, int(round(y0)))
@@ -323,9 +369,12 @@ class SectorEnv(Environment):
         Set a circular sector's observability.
         
         Args:
-            cx, cy: center coordinates
-            radius: circle radius
+            cx, cy: center in grid cell indices (integer)
+            radius: circle radius in grid cells (integer/float)
             observable: True to make region observable, False for non-observable
+        
+        Note: Coordinates are in grid cell units, not physical meters.
+        To convert from meters: grid_x = int(physical_x / cell_size)
         """
         for i in range(self.height):
             for j in range(self.width):
@@ -335,11 +384,26 @@ class SectorEnv(Environment):
     
     def is_observable_at(self, x, y):
         """
-        Check if a point (x, y) is in an observable region.
-        Returns True if observable (fully detectable without drones).
+        Check if a point (x, y) in physical coordinates (meters) is in an observable region.
+        
+        Args:
+            x, y: physical coordinates in meters
+        
+        Returns:
+            bool: True if observable (fully detectable without drones), False otherwise
+        
+        Maps continuous physical coordinates to grid indices and checks the observable_mask.
+        This is the ONLY place where grid resolution affects detection logic (observability boundary).
+        All probability computations are continuous and independent of grid.
         """
-        xi = int(round(np.clip(x, 0, self.width - 1)))
-        yi = int(round(np.clip(y, 0, self.height - 1)))
+        # Convert physical coordinates to grid indices
+        xi = int(np.floor(x / self.cell_size))
+        yi = int(np.floor(y / self.cell_size))
+        
+        # Clamp to valid grid indices
+        xi = np.clip(xi, 0, self.width - 1)
+        yi = np.clip(yi, 0, self.height - 1)
+        
         return self.observable_mask[yi, xi]
     
     def get_detection_probability_at_point(self, x, y):
@@ -557,9 +621,14 @@ class SectorEnv(Environment):
         
         Args:
             show_sectors: if True, overlay observable/non-observable regions
+        
+        All coordinates shown are in physical units (meters).
         """
         # Call parent visualization
         ax = super().visualize(figsize=figsize, ax=ax, show=False)
+        
+        physical_width = self.width * self.cell_size
+        physical_height = self.height * self.cell_size
         
         if show_sectors:
             # Create a mask overlay: green tint for observable, red tint for non-observable
@@ -571,7 +640,7 @@ class SectorEnv(Environment):
             # Non-observable regions: slight red tint
             sector_overlay[~self.observable_mask, :] = [1.0, 0.0, 0.0, 0.15]
             
-            ax.imshow(sector_overlay, origin='lower', extent=(0, self.width, 0, self.height), zorder=1)
+            ax.imshow(sector_overlay, origin='lower', extent=(0, physical_width, 0, physical_height), zorder=1)
             
             # Add legend entries for sectors
             from matplotlib.patches import Patch

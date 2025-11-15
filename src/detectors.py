@@ -30,23 +30,20 @@ class Detector:
     
 def Rect_Detectors(detector_type: detector_configs.DetectorType, grid_size: tuple, spacing: float):
     """
-    Create a grid of detectors of given type over the specified area.
+    Create a rectangular grid of detectors defined by corner points or dimensions.
 
-    detector_type: Type of detectors to create.
-    grid_size: Tuple (width, height) specifying the area size.
-    spacing: Distance between adjacent detectors in the grid.
-    """
-    """
-    Create a rectangular subgrid of detectors defined by the four corner points.
-
-    Parameters
+    Parameters:
     - detector_type: DetectorType enum value
-    - corners: iterable of four (x, y) corner tuples (order doesn't matter)
-               The function will compute the bounding box of these corners and
-               populate detectors inside that box on a regular spacing grid.
-    - spacing: spacing between adjacent detectors in the subgrid (float)
+    - grid_size: Either:
+                 * Four (x,y) corner tuples defining rectangle bounds (in physical meters)
+                 * Legacy: (width, height) tuple (assumes corners at (0,0), (width,0), (width,height), (0,height))
+    - spacing: spacing between adjacent detectors in physical units (meters)
 
-    Returns a list of `Detector` instances placed on the subgrid (including edges).
+    Returns:
+        List of `Detector` instances with positions in physical coordinates (meters).
+    
+    All detector positions are in continuous physical coordinates and do NOT depend on
+    environment grid resolution.
     """
     # New signature: second argument is corners (iterable of 4 (x,y) pairs)
     # Accept either a single tuple-of-4 or the old (width,height) for backward compatibility
@@ -89,12 +86,16 @@ def Triang_Detectors(detector_type: detector_configs.DetectorType, triangle_corn
     """
     Generate detectors uniformly inside a triangle defined by three corner points.
 
-    Parameters
+    Parameters:
     - detector_type: DetectorType enum value
-    - triangle_corners: iterable of three (x,y) tuples
-    - spacing: approximate spacing between detectors
+    - triangle_corners: iterable of three (x,y) tuples in physical coordinates (meters)
+    - spacing: approximate spacing between detectors in physical units (meters)
 
-    Returns a list of `Detector` instances placed approximately on a grid inside the triangle.
+    Returns:
+        List of `Detector` instances with positions in physical coordinates (meters).
+    
+    All detector positions are in continuous physical coordinates and do NOT depend on
+    environment grid resolution.
     """
 
     if spacing <= 0:
@@ -131,5 +132,57 @@ def Triang_Detectors(detector_type: detector_configs.DetectorType, triangle_corn
                 detectors.append(Detector(type=detector_type, position=(float(x), float(y))))
 
     return detectors
+            
+
+def set_nonobservable_triangle(sector_env, triangle_corners: tuple, physical_coords=True):
+    """
+    Mark the grid cells inside a triangle as non-observable on the given SectorEnv.
+
+    Args:
+        sector_env: instance of SectorEnv (or Environment with observable_mask)
+        triangle_corners: iterable of three (x,y) tuples defining the triangle
+        physical_coords: if True (default), triangle_corners are in physical meters;
+                        if False, they are in grid cell indices
+    
+    This helper modifies `sector_env.observable_mask` in-place, setting cells
+    whose center point lies inside the triangle to False (non-observable).
+    """
+    if not (hasattr(triangle_corners, '__len__') and len(triangle_corners) == 3):
+        raise ValueError('triangle_corners must be an iterable of three (x,y) pairs')
+
+    # Convert to grid coordinates if needed
+    if physical_coords:
+        cell_size = getattr(sector_env, 'cell_size', 1.0)
+        (x1, y1), (x2, y2), (x3, y3) = [(float(a) / cell_size, float(b) / cell_size) for a, b in triangle_corners]
+    else:
+        (x1, y1), (x2, y2), (x3, y3) = [(float(a), float(b)) for a, b in triangle_corners]
+
+    # Bounding box to limit work (in grid cell indices)
+    x_min = max(0, int(np.floor(min(x1, x2, x3))))
+    x_max = min(int(np.ceil(max(x1, x2, x3))), sector_env.width - 1)
+    y_min = max(0, int(np.floor(min(y1, y2, y3))))
+    y_max = min(int(np.ceil(max(y1, y2, y3))), sector_env.height - 1)
+
+    # barycentric helper
+    def _point_in_triangle(px, py):
+        denom = (y2 - y3)*(x1 - x3) + (x3 - x2)*(y1 - y3)
+        if denom == 0:
+            return False
+        a = ((y2 - y3)*(px - x3) + (x3 - x2)*(py - y3)) / denom
+        b = ((y3 - y1)*(px - x3) + (x1 - x3)*(py - y3)) / denom
+        c = 1.0 - a - b
+        return (a >= 0) and (b >= 0) and (c >= 0)
+
+    # Iterate integer grid cells and mark those whose center point is inside
+    for yi in range(y_min, y_max + 1):
+        for xi in range(x_min, x_max + 1):
+            cx = float(xi) + 0.5
+            cy = float(yi) + 0.5
+            if _point_in_triangle(cx, cy):
+                try:
+                    sector_env.observable_mask[yi, xi] = False
+                except Exception:
+                    # best-effort: if mask not present or indexing fails, skip
+                    continue
             
 
