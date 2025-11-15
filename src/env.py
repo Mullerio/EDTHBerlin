@@ -467,7 +467,7 @@ class SectorEnv(Environment):
         
         return 1.0 - prob_not_detected
     
-    def analyze_trajectory(self, trajectory, time_per_step=1.0, only_nonobservable=True):
+    def analyze_trajectory(self, trajectory, time_per_step=1.0, only_nonobservable=True, include_observable_in_stats=False):
         """
         Analyze detection probability along an attacker trajectory.
         
@@ -476,6 +476,9 @@ class SectorEnv(Environment):
             time_per_step: time elapsed between consecutive waypoints (seconds)
             only_nonobservable: if True, only calculate detection for non-observable region
                               (ignores observable regions where detection is automatic)
+            include_observable_in_stats: if True, include observable regions in probability calculations
+                                         (treats observable as 100% detection, includes in averages/intervals)
+                                         Only effective when only_nonobservable=True
         
         Returns:
             dict with keys:
@@ -582,20 +585,40 @@ class SectorEnv(Environment):
             if first_detection_time is None and cumulative_detection > 0.5:
                 first_detection_time = i * time_per_step
         
-        # Calculate average detection probability per second in non-observable region
-        total_detection_prob_nonobs = sum(p for i, p in enumerate(point_probs) 
-                                         if not self.is_observable_at(*trajectory[i]))
-        avg_detection_per_second = (total_detection_prob_nonobs / time_in_nonobs 
-                                   if time_in_nonobs > 0 else 0.0)
+        # Calculate average detection probability per second
+        if include_observable_in_stats and only_nonobservable:
+            # Include observable regions (as 100% detection) in the calculation
+            # For non-observable points: use actual detector probabilities
+            # For observable points: treat as 1.0 detection probability per second
+            total_detection_prob_nonobs = sum(p for i, p in enumerate(point_probs) 
+                                             if not self.is_observable_at(*trajectory[i]))
+            # Observable time contributes 1.0 per second (100% detection)
+            total_detection_prob = total_detection_prob_nonobs + time_in_obs
+            total_time = time_in_obs + time_in_nonobs
+            avg_detection_per_second = (total_detection_prob / total_time 
+                                       if total_time > 0 else 0.0)
+            time_for_intervals = total_time
+        else:
+            # Only consider non-observable region
+            total_detection_prob_nonobs = sum(p for i, p in enumerate(point_probs) 
+                                             if not self.is_observable_at(*trajectory[i]))
+            avg_detection_per_second = (total_detection_prob_nonobs / time_in_nonobs 
+                                       if time_in_nonobs > 0 else 0.0)
+            time_for_intervals = time_in_nonobs
         
         # Calculate detection rate per various time intervals
+        # Using average detection probability raised to the power of the interval
         detection_rate_per_interval = {}
         for interval in [1, 5, 10, 30, 60]:  # seconds
-            steps_per_interval = max(1, int(interval / time_per_step))
-            # Probability of being detected at least once in 'interval' seconds
+            if time_for_intervals == 0:
+                detection_rate_per_interval[f'{interval}s'] = 0.0
+                continue
+            
+            # Use average detection per second
+            # P(not detected in interval) = (1 - avg_prob)^interval
+            # P(detected in interval) = 1 - (1 - avg_prob)^interval
             prob_not_detected_interval = (1.0 - avg_detection_per_second) ** interval
-            prob_detected_interval = 1.0 - prob_not_detected_interval
-            detection_rate_per_interval[f'{interval}s'] = prob_detected_interval
+            detection_rate_per_interval[f'{interval}s'] = 1.0 - prob_not_detected_interval
         
         return {
             'cumulative_detection_prob': cumulative_probs[-1] if cumulative_probs else 0.0,
@@ -714,12 +737,15 @@ class SectorEnv(Environment):
         
         return ax
     
-    def visualize_trajectory_analysis(self, attacker, figsize=(12, 5)):
+    def visualize_trajectory_analysis(self, attacker, figsize=(12, 5), include_observable_in_stats=False):
         """
         Visualize trajectory with detection probability analysis.
         
         Args:
             attacker: Attacker object with .trajectory attribute
+            figsize: tuple of (width, height) for figure size
+            include_observable_in_stats: if True, include observable regions in probability calculations
+                                         (treats observable as 100% detection, includes in averages/intervals)
         
         Returns:
             fig, (ax1, ax2): matplotlib figure and axes
@@ -740,7 +766,7 @@ class SectorEnv(Environment):
             total_dist = np.linalg.norm(target - start)
             time_per_step = 1.0  # default fallback
         
-        analysis = self.analyze_trajectory(trajectory, time_per_step)
+        analysis = self.analyze_trajectory(trajectory, time_per_step, only_nonobservable=True, include_observable_in_stats=include_observable_in_stats)
         
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
         
@@ -753,23 +779,41 @@ class SectorEnv(Environment):
         ax1.set_title('Trajectory & Sectors')
         ax1.legend(loc='upper right')
         
-        # Right plot: Detection probability over time
-        times = [entry['time'] for entry in analysis['time_to_detection']]
-        instant_probs = [entry['instant_prob'] for entry in analysis['time_to_detection']]
-        cumulative_probs = [entry['cumulative_prob'] for entry in analysis['time_to_detection']]
+        # Right plot: Detection probability over time (only from detectors in non-observable)
+        times = np.array([entry['time'] for entry in analysis['time_to_detection']])
+        instant_probs = np.array([entry['instant_prob'] for entry in analysis['time_to_detection']])
+        in_nonobservable = np.array([entry['in_nonobservable'] for entry in analysis['time_to_detection']])
         
-        ax2.plot(times, instant_probs, 'b-', label='Instant detection prob', alpha=0.6)
-        ax2.plot(times, cumulative_probs, 'r-', linewidth=2, label='Cumulative detection prob')
-        ax2.axhline(y=0.5, color='orange', linestyle='--', label='50% threshold')
-        ax2.axhline(y=0.9, color='red', linestyle='--', label='90% threshold')
+        # Create detection probability array: show detector prob only in non-observable, 1.0 in observable
+        detection_probs = np.where(in_nonobservable, instant_probs, 1.0)
         
-        if analysis['first_detection_time'] is not None:
-            ax2.axvline(x=analysis['first_detection_time'], color='purple', 
-                       linestyle=':', label=f'50% at t={analysis["first_detection_time"]:.1f}s')
+        # Smooth transitions at boundaries to reduce "wiggle" effect
+        # Apply a 3-point moving average at region boundaries
+        smoothed_probs = detection_probs.copy()
+        for i in range(1, len(detection_probs) - 1):
+            # Check if this is a boundary point (region change)
+            if in_nonobservable[i] != in_nonobservable[i-1] or in_nonobservable[i] != in_nonobservable[i+1]:
+                smoothed_probs[i] = (detection_probs[i-1] + detection_probs[i] + detection_probs[i+1]) / 3.0
+        
+        # Create continuous shading for observable regions
+        # Find contiguous observable segments
+        observable_mask = ~in_nonobservable
+        if np.any(observable_mask):
+            # Find transitions
+            diff = np.diff(np.concatenate(([False], observable_mask, [False])).astype(int))
+            starts = np.where(diff == 1)[0]
+            ends = np.where(diff == -1)[0]
+            
+            # Shade each observable segment
+            for start, end in zip(starts, ends):
+                ax2.axvspan(times[start], times[end-1], alpha=0.15, color='green', label='Observable region' if start == starts[0] else '')
+        
+        # Plot smoothed detection probability
+        ax2.plot(times, smoothed_probs, 'b-', linewidth=2, label='Detection probability')
         
         ax2.set_xlabel('Time (seconds)')
         ax2.set_ylabel('Detection Probability')
-        ax2.set_title('Detection Probability Analysis')
+        ax2.set_title('Detection Probability Over Time')
         ax2.grid(True, alpha=0.3)
         ax2.legend(loc='best')
         ax2.set_ylim(0, 1.05)
