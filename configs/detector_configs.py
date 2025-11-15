@@ -65,7 +65,7 @@ class AcousticDetectorConfig:
 class VisualDetectorConfig:
     """Configuration for a visual detector."""
 
-    radius: float = 1500
+    radius: float = 300
     distance_probability_map: dict = field(default_factory=lambda: {0: 1.0, 600: 0.70, 1000: 0.2, 1500: 0.0})
 
     def probability(self, distance: float) -> float:

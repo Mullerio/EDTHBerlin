@@ -1,0 +1,6 @@
+trajectory_id,cumulative_detection_prob,avg_detection_per_second,time_in_observable,time_in_nonobservable,sliding_window_5s_min,sliding_window_5s_max,sliding_window_5s_mean,sliding_window_10s_min,sliding_window_10s_max,sliding_window_10s_mean,sliding_window_15s_min,sliding_window_15s_max,sliding_window_15s_mean,sliding_window_30s_min,sliding_window_30s_max,sliding_window_30s_mean,sliding_window_60s_min,sliding_window_60s_max,sliding_window_60s_mean
+0,0.0,0.0,196.0,181.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+1,0.0,0.0,175.0,166.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+2,0.0,0.0,187.0,168.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+3,0.0,0.0,168.0,183.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+MEAN,0.0,0.0,181.5,174.5,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
