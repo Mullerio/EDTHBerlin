@@ -63,6 +63,18 @@
           <button type="button" id="close-shape">Close shape</button>
           <button type="button" id="fill-grid">Fill grid</button>
         </div>
+        <div class="panel__import">
+          <button type="button" id="load-csv-grid">Load CSV grid</button>
+          <input
+            type="file"
+            id="csv-grid-input"
+            accept=".csv,text/csv"
+            hidden
+          />
+          <p class="panel__hint">
+            Upload a 0/1 matrix CSV to skip drawing shapes.
+          </p>
+        </div>
         <div class="panel__zoom">
           <label for="zoom-input">Zoom</label>
           <input
