@@ -62,11 +62,21 @@ class AcousticDetectorConfig:
 
 
 @dataclass(frozen=True)
-class VisualDetectorConfig:
+class VisualDetectorConfig2:
     """Configuration for a visual detector."""
 
     radius: float = 300
-    distance_probability_map: dict = field(default_factory=lambda: {0: 1.0, 600: 0.70, 1000: 0.2, 1500: 0.0})
+    
+    def __post_init__(self):
+        # Calculate distance_probability_map based on radius
+        # Use object.__setattr__ because the dataclass is frozen
+        distance_map = {
+            0: 1.0,
+            self.radius / 3: 0.70,
+            2 * self.radius / 3: 0.30,
+            self.radius: 0.0
+        }
+        object.__setattr__(self, 'distance_probability_map', distance_map)
 
     def probability(self, distance: float) -> float:
         """
@@ -152,6 +162,112 @@ class VisualDetectorConfig:
         if np.ndim(distance) == 0:
             return float(p)
         return p
+
+
+@dataclass(frozen=True)
+class VisualDetectorConfig:
+    """Configuration for a visual detector."""
+
+    radius: float = 750
+    
+    def __post_init__(self):
+        # Calculate distance_probability_map based on radius
+        # Use object.__setattr__ because the dataclass is frozen
+        # Using proportions: 0.4*radius, 0.667*radius, radius for key distances
+        distance_map = {
+            0: 1.0,
+            0.4 * self.radius: 0.70,
+            0.667 * self.radius: 0.20,
+            self.radius: 0.0
+        }
+        object.__setattr__(self, 'distance_probability_map', distance_map)
+
+    def probability(self, distance: float) -> float:
+        """
+        Piecewise probability function based on configurable distance/probability points.
+        Default values:
+        - p(0)    = 1.0 (100%)
+        - p(500)  = 0.8 (80%)
+        - p(1000) = 0.3 (30%)
+        - p(1500) = 0.0 (0%)
+        - p(d)    = 0.0 for d >= radius
+        
+        Uses quadratic interpolation (slow at first) from 0 to 500m,
+        linear interpolation from 500m to 1000m,
+        and exponential decay from 1000m to 1500m.
+        """
+        arr = np.asarray(distance)
+        clipped = np.maximum(arr, 0.0)
+        p = np.zeros_like(clipped, dtype=float)
+        
+        # Get sorted distance points
+        distances = sorted(self.distance_probability_map.keys())
+        probabilities = [self.distance_probability_map[d] for d in distances]
+        
+        # Handle distances beyond the maximum defined distance
+        max_distance = max(distances)
+        mask_within_range = clipped <= max_distance
+        
+        # For each distance value, interpolate between the defined points
+        for i in range(len(distances) - 1):
+            d1, p1 = distances[i], probabilities[i]
+            d2, p2 = distances[i + 1], probabilities[i + 1]
+            
+            # Check if this is the last segment (should use exponential decay)
+            is_last_segment = (i == len(distances) - 2)
+            
+            # Find distances in this segment
+            if is_last_segment:
+                mask_segment = (clipped >= d1) & (clipped <= d2) & mask_within_range
+            else:
+                mask_segment = (clipped >= d1) & (clipped < d2) & mask_within_range
+            
+            if np.any(mask_segment):
+                # Use exponential decay for the segment from 1000m to 1500m (last segment)
+                if is_last_segment and d1 >= 1000:
+                    # Exponential decay from p1 at d1 to 0.0 at d2
+                    # Use normalized exponential decay: p(d) = p1 * (exp(-k*(d-d1)/(d2-d1)) - exp(-k)) / (1 - exp(-k))
+                    # This ensures p(d1) = p1 and p(d2) = 0
+                    k = 5.0  # Decay rate (higher = faster decay)
+                    d_offset = clipped[mask_segment] - d1
+                    d_range = d2 - d1
+                    if d_range > 0:
+                        # Normalized exponential decay that reaches 0 at d2
+                        exp_term = np.exp(-k * d_offset / d_range)
+                        exp_end = np.exp(-k)
+                        p[mask_segment] = p1 * (exp_term - exp_end) / (1.0 - exp_end)
+                    else:
+                        p[mask_segment] = p1
+                # Use quadratic (slow at first) for the segment from 0 to 500m
+                elif d1 == 0:
+                    # Quadratic interpolation: p(d) = p1 + (p2 - p1) * (d/d_range)^2
+                    # This decreases slowly at first, then faster
+                    if d2 != d1:  # Avoid division by zero
+                        d_offset = clipped[mask_segment] - d1
+                        d_range = d2 - d1
+                        # Normalized distance squared: (d/d_range)^2
+                        normalized_dist_sq = (d_offset / d_range) ** 2
+                        p[mask_segment] = p1 + (p2 - p1) * normalized_dist_sq
+                    else:
+                        p[mask_segment] = p1
+                else:
+                    # Linear interpolation for other segments: p(d) = p1 + (p2 - p1) * (d - d1) / (d2 - d1)
+                    if d2 != d1:  # Avoid division by zero
+                        p[mask_segment] = p1 + (p2 - p1) * (clipped[mask_segment] - d1) / (d2 - d1)
+                    else:
+                        p[mask_segment] = p1
+        
+        # Handle distances beyond radius
+        mask_beyond = clipped > self.radius
+        if np.any(mask_beyond):
+            p[mask_beyond] = 0.0
+        
+        p = np.clip(p, 0.0, 1.0)
+        if np.ndim(distance) == 0:
+            return float(p)
+        return p
+
+
 
 
 @dataclass(frozen=True)

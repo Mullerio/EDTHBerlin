@@ -4,20 +4,10 @@ Building Simulation Environment to test different detection methods for low flyi
 
 ## TODO:
 
-Somewhat optimal distribution of detectors inside region given.
+Simulation TODO: 
 
 
-
-Website: 
-What always happens: User chooses grid shape thats radar occluded 
-
-1. User chooses start and end point for each attacker drone (possibly also midpoint, but could also do via mean)
-2. "complete analysis" i.e. randomly generate attackers from all angles, they either fly straight through the shape or also via midpoint 
-
-for presentation, do 1, choose detector based on their distributions in "optimal" way.
-
-
-Simulation:
-- midpoint for trajectory 
-- also have option to incorperate time outside of non visible grid -> present both? 
-- make function that takes everything from website, how to?
+Do one realistic config 
+Give option to not use midpoints 
+Give option to generate stuff without using any midpoints 
+Give option to generate midpoint as being the "center of the grid" 

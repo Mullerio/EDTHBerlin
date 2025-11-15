@@ -422,7 +422,7 @@ if __name__ == "__main__":
     
     # Example trial
     results = run_single_trial(
-        json_path=project_root / "utils" / "grid-150x150(3).json",
+        json_path=project_root / "utils" / "basic_notreal.json",
         n_detectors=10,
         detector_type=detector_configs.DetectorType.VISUAL,
         sliding_window_sizes=[5, 10, 15, 30, 60],
