@@ -91,22 +91,14 @@ function init() {
 
 function handleGridSubmit(event) {
   event.preventDefault();
-  const rows = clamp(
-    parseInt(rowsInput.value, 10),
-    Number(rowsInput.min),
-    Number(rowsInput.max)
-  );
-  const cols = clamp(
-    parseInt(colsInput.value, 10),
-    Number(colsInput.min),
-    Number(colsInput.max)
-  );
+  const rows = sanitizeGridDimension(rowsInput, 2);
+  const cols = sanitizeGridDimension(colsInput, 2);
   const cellMeters = sanitizeCellSizeMeters(
     Number(cellSizeInput ? cellSizeInput.value : state.cellSizeMeters)
   );
 
-  rowsInput.value = rows;
-  colsInput.value = cols;
+  rowsInput.value = String(rows);
+  colsInput.value = String(cols);
   if (cellSizeInput) {
     cellSizeInput.value = cellMeters;
   }
@@ -716,6 +708,32 @@ function sanitizeCellSizeMeters(value) {
     Number.isFinite(maxAttr) && maxAttr > min ? maxAttr : Math.max(min * 10, 1000);
   const numeric = Number.isFinite(value) ? value : min;
   return clamp(numeric, min, max);
+}
+
+function sanitizeGridDimension(input, fallback = 2) {
+  const safeFallback =
+    Number.isFinite(fallback) && fallback > 0 ? Math.floor(fallback) : 2;
+  const { min, max } = getDimensionBounds(input, safeFallback);
+  const raw = Number.parseInt(input?.value ?? safeFallback, 10);
+  const normalized = Number.isFinite(raw) ? raw : safeFallback;
+  return clamp(Math.floor(normalized), min, max);
+}
+
+function getDimensionBounds(input, fallbackMin = 2) {
+  const safeFallback =
+    Number.isFinite(fallbackMin) && fallbackMin > 0 ? Math.floor(fallbackMin) : 2;
+  if (!input) {
+    return { min: safeFallback, max: Number.POSITIVE_INFINITY };
+  }
+  const minAttr = Number(input.min);
+  const hasMin = Number.isFinite(minAttr) && minAttr > 0;
+  const min = hasMin ? Math.floor(minAttr) : safeFallback;
+
+  const maxAttr = Number(input.max);
+  const hasMax = Number.isFinite(maxAttr) && maxAttr >= min;
+  const max = hasMax ? Math.floor(maxAttr) : Number.POSITIVE_INFINITY;
+
+  return { min, max };
 }
 
 function updateStatus(message) {
