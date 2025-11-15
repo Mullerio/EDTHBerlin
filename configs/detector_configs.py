@@ -267,6 +267,45 @@ class VisualDetectorConfig:
             return float(p)
         return p
 
+    def gaussian_probability(self, distance: float, sigma_ratio: float = 0.35) -> float:
+        """
+        Gaussian-like probability curve:
+        - p(0) = 1.0 (100%)
+        - Smooth falloff similar to a Gaussian distribution
+        - Clamped to 0 beyond the detector radius
+        
+        sigma_ratio controls how quickly the curve decays (sigma = sigma_ratio * radius).
+        """
+        if sigma_ratio <= 0:
+            raise ValueError("sigma_ratio must be positive")
+
+        arr = np.asarray(distance)
+        clipped = np.maximum(arr, 0.0)
+        p = np.zeros_like(clipped, dtype=float)
+
+        mask = clipped <= self.radius
+        if np.any(mask):
+            sigma = sigma_ratio * self.radius
+            sigma = max(sigma, 1e-9)
+
+            base = np.exp(-0.5 * (clipped[mask] / sigma) ** 2)
+            tail = np.exp(-0.5 * (self.radius / sigma) ** 2)
+            denom = 1.0 - tail
+
+            if denom < 1e-12:
+                p[mask] = base
+            else:
+                p[mask] = (base - tail) / denom
+
+        mask_beyond = clipped > self.radius
+        if np.any(mask_beyond):
+            p[mask_beyond] = 0.0
+
+        p = np.clip(p, 0.0, 1.0)
+        if np.ndim(distance) == 0:
+            return float(p)
+        return p
+
 
 
 
