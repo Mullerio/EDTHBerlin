@@ -46,6 +46,66 @@ class GridData:
     attackers: list[Attacker]
 
 
+def _apply_lower_left_origin(grid_data: GridData) -> GridData:
+    height = grid_data.matrix.shape[0]
+    if height == 0:
+        return grid_data
+
+    max_row_index = height - 1
+    max_meter_y = max_row_index * grid_data.cell_size_m
+
+    def flip_grid(vec: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if vec is None or vec.size == 0:
+            return vec
+        flipped = vec.copy()
+        flipped[0] = max_row_index - flipped[0]
+        return flipped
+
+    def flip_meters(vec: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if vec is None or vec.size < 2:
+            return vec
+        flipped = vec.copy()
+        flipped[1] = max_meter_y - flipped[1]
+        return flipped
+
+    converted_vertex_ids: set[int] = set()
+
+    def flip_vertex(vertex: Vertex) -> None:
+        if vertex is None:
+            return
+        vertex_id = id(vertex)
+        if vertex_id in converted_vertex_ids:
+            return
+        converted_vertex_ids.add(vertex_id)
+        vertex.grid = flip_grid(vertex.grid)
+        vertex.meters = flip_meters(vertex.meters)
+
+    def flip_cell_position(cell: Optional[CellPosition]) -> Optional[CellPosition]:
+        if cell is None:
+            return None
+        cell.grid = flip_grid(cell.grid)
+        cell.meters = flip_meters(cell.meters)
+        return cell
+
+    grid_data.centroid_grid = flip_grid(grid_data.centroid_grid)
+    grid_data.centroid_meters = flip_meters(grid_data.centroid_meters)
+
+    for vertex in grid_data.shape_vertices:
+        flip_vertex(vertex)
+
+    for shape in grid_data.shapes:
+        shape.centroid_grid = flip_grid(shape.centroid_grid)
+        shape.centroid_meters = flip_meters(shape.centroid_meters)
+        for vertex in shape.vertices:
+            flip_vertex(vertex)
+
+    for attacker in grid_data.attackers:
+        attacker.start = flip_cell_position(attacker.start)
+        attacker.target = flip_cell_position(attacker.target)
+
+    return grid_data
+
+
 def _vector_from_dict(data: Optional[dict[str, float]], keys: Iterable[str]) -> Optional[np.ndarray]:
     if not data:
         return None
@@ -130,7 +190,7 @@ def load_grid_payload(path: str | Path) -> GridData:
             )
         )
 
-    return GridData(
+    grid_data = GridData(
         matrix=matrix,
         cell_size_m=cell_size_m,
         centroid_grid=centroid_grid,
@@ -139,6 +199,7 @@ def load_grid_payload(path: str | Path) -> GridData:
         shapes=shapes,
         attackers=attackers,
     )
+    return _apply_lower_left_origin(grid_data)
 
 
 if __name__ == "__main__":
