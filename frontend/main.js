@@ -22,6 +22,8 @@ const attackerListEl = document.getElementById("attacker-list");
 const copyPythonButton = document.getElementById("copy-python");
 const downloadJsonButton = document.getElementById("download-json");
 const pythonPreview = document.getElementById("python-preview");
+const shapeCountEl = document.getElementById("shape-count");
+const shapeListEl = document.getElementById("shape-list");
 
 const MAX_CANVAS_SIZE = 640;
 const MIN_CELL_SIZE = 6;
@@ -38,15 +40,15 @@ const state = {
   cols: parseInt(colsInput.value, 10),
   cellSize: 32,
   vertices: [],
-  shapeClosed: false,
   grid: [],
   hasGrid: false,
+  completedShapes: [],
+  shapeSequence: 0,
   attackers: [],
   activeAttackerId: null,
   attackerSequence: 0,
   selectionMode: null,
   cellSizeMeters: initialCellSizeMeters,
-  shapeCentroid: null,
   zoom: Number.isFinite(initialZoomPercent) ? initialZoomPercent / 100 : 1,
 };
 
@@ -114,14 +116,14 @@ function createGrid(rows, cols) {
   canvas.height = state.rows * state.cellSize + 1;
   state.grid = buildGrid(rows, cols, 1);
   state.vertices = [];
-  state.shapeClosed = false;
   state.hasGrid = true;
+  state.completedShapes = [];
+  state.shapeSequence = 0;
   state.selectionMode = null;
-  state.shapeCentroid = null;
 
   initializeAttackers();
   updatePythonPreview();
-  updateCentroidDisplay();
+  updateShapeSummary();
   updateStatus("Grid created. Click on the canvas to add vertices.");
   drawGrid();
   applyZoom();
@@ -141,24 +143,20 @@ function handleCanvasClick(event) {
     return;
   }
 
-  if (state.shapeClosed) {
-    updateStatus("Shape is closed. Reset or fill the grid.");
-    return;
-  }
-
   const snapped = snapToGrid(x, y);
   const firstVertex = state.vertices[0];
 
   if (
-    !state.shapeClosed &&
     state.vertices.length >= 3 &&
     firstVertex &&
     isSamePoint(snapped, firstVertex)
   ) {
-    state.shapeClosed = true;
-    drawGrid();
-    updateShapeCentroid();
-    updateStatus("Shape closed. Click Fill grid to generate the matrix.");
+    const finalized = finalizeCurrentShape();
+    if (finalized) {
+      updateStatus(
+        "Shape stored. Continue drawing to add another shape or fill the grid."
+      );
+    }
     return;
   }
 
@@ -169,13 +167,10 @@ function handleCanvasClick(event) {
   }
 
   state.vertices.push(snapped);
-  state.shapeCentroid = null;
-  updateCentroidDisplay();
-  updatePythonPreview();
   drawGrid();
   updateStatus(
     state.vertices.length >= 3
-      ? "Click Close shape or click the first vertex again to finish."
+      ? "Click Close shape or click the first vertex again to store this shape."
       : "Add at least three points."
   );
 }
@@ -189,15 +184,10 @@ function closeShape() {
     updateStatus("Need at least three vertices to close the shape.");
     return;
   }
-  if (state.shapeClosed) {
-    updateStatus("Shape already closed. Fill or reset the grid.");
-    return;
+  const finalized = finalizeCurrentShape();
+  if (finalized) {
+    updateStatus("Shape stored. Continue drawing or fill the grid.");
   }
-
-  state.shapeClosed = true;
-  drawGrid();
-  updateShapeCentroid();
-  updateStatus("Shape closed. Click Fill grid to generate the matrix.");
 }
 
 function resetShape() {
@@ -207,13 +197,13 @@ function resetShape() {
   }
 
   state.vertices = [];
-  state.shapeClosed = false;
+  state.completedShapes = [];
+  state.shapeSequence = 0;
   state.grid = buildGrid(state.rows, state.cols, 1);
   drawGrid();
   updatePythonPreview();
-  state.shapeCentroid = null;
-  updateCentroidDisplay();
-  updateStatus("Shape reset. Start adding vertices again.");
+  updateShapeSummary();
+  updateStatus("Shapes reset. Start adding vertices again.");
 }
 
 function fillGridWithPolygon() {
@@ -221,14 +211,13 @@ function fillGridWithPolygon() {
     updateStatus("Create a grid first.");
     return;
   }
-  if (!state.shapeClosed || state.vertices.length < 3) {
-    updateStatus("Close the shape before filling the grid.");
+  if (state.completedShapes.length === 0) {
+    updateStatus("Close at least one shape before filling the grid.");
     return;
   }
 
   const filledGrid = buildGrid(state.rows, state.cols, 1);
-  const polygon = state.vertices.slice();
-  updateShapeCentroid();
+  const polygons = state.completedShapes.map((shape) => shape.vertices);
 
   for (let row = 0; row < state.rows; row += 1) {
     for (let col = 0; col < state.cols; col += 1) {
@@ -236,7 +225,9 @@ function fillGridWithPolygon() {
         x: col * state.cellSize + state.cellSize / 2,
         y: row * state.cellSize + state.cellSize / 2,
       };
-      if (isPointInPolygon(center, polygon)) {
+      if (
+        polygons.some((polygon) => isPointInPolygon(center, polygon))
+      ) {
         filledGrid[row][col] = 0;
       }
     }
@@ -245,8 +236,9 @@ function fillGridWithPolygon() {
   state.grid = filledGrid;
   drawGrid();
   updatePythonPreview();
-  updateStatus("Grid filled. 0 = inside, 1 = outside.");
-  downloadJsonPayload(true);
+  updateStatus(
+    `Grid filled. 0 = inside any of the ${state.completedShapes.length} stored shape(s). Click "Download JSON" to export.`
+  );
 }
 
 function drawGrid() {
@@ -255,8 +247,9 @@ function drawGrid() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   drawCells();
   drawGridLines();
-  drawPolygon();
-  drawShapeCentroid();
+  drawCompletedShapes();
+  drawActiveShape();
+  drawShapeCentroids();
   drawAttackerMarkers();
 }
 
@@ -295,53 +288,66 @@ function drawGridLines() {
   ctx.stroke();
 }
 
-function drawPolygon() {
-  if (state.vertices.length === 0) return;
+function drawCompletedShapes() {
+  if (state.completedShapes.length === 0) return;
+  state.completedShapes.forEach((shape) => {
+    drawShapePath(shape.vertices, { stroke: "#2563eb", closePath: true });
+  });
+}
 
-  ctx.strokeStyle = state.shapeClosed ? "#0f7bff" : "#ff7b00";
+function drawActiveShape() {
+  if (state.vertices.length === 0) return;
+  drawShapePath(state.vertices, { stroke: "#ff7b00", closePath: false });
+}
+
+function drawShapePath(vertices, { stroke = "#0f7bff", closePath = true } = {}) {
+  if (!vertices || vertices.length === 0) return;
+  ctx.strokeStyle = stroke;
   ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.moveTo(state.vertices[0].x, state.vertices[0].y);
-  for (let i = 1; i < state.vertices.length; i += 1) {
-    ctx.lineTo(state.vertices[i].x, state.vertices[i].y);
+  ctx.moveTo(vertices[0].x, vertices[0].y);
+  for (let i = 1; i < vertices.length; i += 1) {
+    ctx.lineTo(vertices[i].x, vertices[i].y);
   }
-  if (state.shapeClosed) {
-    ctx.lineTo(state.vertices[0].x, state.vertices[0].y);
+  if (closePath && vertices.length > 2) {
+    ctx.lineTo(vertices[0].x, vertices[0].y);
   }
   ctx.stroke();
 
   ctx.fillStyle = "#ffffff";
   ctx.strokeStyle = "#111827";
-  for (const vertex of state.vertices) {
+  vertices.forEach((vertex) => {
     ctx.beginPath();
     ctx.arc(vertex.x, vertex.y, Math.max(4, state.cellSize * 0.08), 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
-  }
+  });
 }
 
-function drawShapeCentroid() {
-  if (!state.shapeCentroid || !state.shapeClosed) return;
-  const { pixel } = state.shapeCentroid;
-  if (!pixel) return;
-  const radius = Math.max(5, state.cellSize * 0.18);
+function drawShapeCentroids() {
+  if (state.completedShapes.length === 0) return;
+  state.completedShapes.forEach((shape) => {
+    const pixel = shape.centroid?.pixel;
+    if (!pixel) return;
+    const radius = Math.max(5, state.cellSize * 0.18);
 
-  ctx.save();
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = "#0f172a";
-  ctx.fillStyle = "#14b8a6";
-  ctx.beginPath();
-  ctx.arc(pixel.x, pixel.y, radius, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.stroke();
+    ctx.save();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "#0f172a";
+    ctx.fillStyle = "#14b8a6";
+    ctx.beginPath();
+    ctx.arc(pixel.x, pixel.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
 
-  ctx.beginPath();
-  ctx.moveTo(pixel.x - radius * 1.2, pixel.y);
-  ctx.lineTo(pixel.x + radius * 1.2, pixel.y);
-  ctx.moveTo(pixel.x, pixel.y - radius * 1.2);
-  ctx.lineTo(pixel.x, pixel.y + radius * 1.2);
-  ctx.stroke();
-  ctx.restore();
+    ctx.beginPath();
+    ctx.moveTo(pixel.x - radius * 1.2, pixel.y);
+    ctx.lineTo(pixel.x + radius * 1.2, pixel.y);
+    ctx.moveTo(pixel.x, pixel.y - radius * 1.2);
+    ctx.lineTo(pixel.x, pixel.y + radius * 1.2);
+    ctx.stroke();
+    ctx.restore();
+  });
 }
 
 function drawAttackerMarkers() {
@@ -431,27 +437,35 @@ function isSamePoint(a, b) {
   return Boolean(a && b) && a.x === b.x && a.y === b.y;
 }
 
-function updateShapeCentroid() {
-  if (!state.shapeClosed || state.vertices.length < 3) {
-    state.shapeCentroid = null;
-    updateCentroidDisplay();
-    updatePythonPreview();
-    return;
+function finalizeCurrentShape() {
+  if (state.vertices.length < 3) {
+    return false;
   }
-  const centroid = computePolygonCentroid(state.vertices);
-  if (!centroid) {
-    state.shapeCentroid = null;
-    updateCentroidDisplay();
-    updatePythonPreview();
-    return;
+  const centroidPixel = computePolygonCentroid(state.vertices);
+  if (!centroidPixel) {
+    return false;
   }
-  const grid = {
-    col: centroid.x / state.cellSize,
-    row: centroid.y / state.cellSize,
+  const centroidGrid = {
+    row: centroidPixel.y / state.cellSize,
+    col: centroidPixel.x / state.cellSize,
   };
-  state.shapeCentroid = { pixel: centroid, grid };
-  updateCentroidDisplay();
+  state.completedShapes.push({
+    id: ++state.shapeSequence,
+    vertices: cloneVertices(state.vertices),
+    centroid: {
+      pixel: centroidPixel,
+      grid: centroidGrid,
+    },
+  });
+  state.vertices = [];
+  updateShapeSummary();
   updatePythonPreview();
+  drawGrid();
+  return true;
+}
+
+function cloneVertices(vertices) {
+  return vertices.map((vertex) => ({ x: vertex.x, y: vertex.y }));
 }
 
 function computePolygonCentroid(points) {
@@ -474,21 +488,46 @@ function computePolygonCentroid(points) {
   return { x: cx, y: cy };
 }
 
-function updateCentroidDisplay() {
+function updateShapeSummary() {
+  const count = state.completedShapes.length;
+  if (shapeCountEl) {
+    shapeCountEl.textContent = String(count);
+  }
   if (!centroidGridEl || !centroidMetersEl) return;
-  if (!state.shapeCentroid) {
+  if (count === 0) {
     centroidGridEl.textContent = "—";
     centroidMetersEl.textContent = "—";
-    return;
+  } else {
+    const lastShape = state.completedShapes[count - 1];
+    const meters = gridToMeters(lastShape.centroid.grid);
+    centroidGridEl.textContent = `row ${formatDecimal(
+      lastShape.centroid.grid.row
+    )}, col ${formatDecimal(lastShape.centroid.grid.col)}`;
+    centroidMetersEl.textContent = `${formatDecimal(
+      meters.x
+    )} m, ${formatDecimal(meters.y)} m`;
   }
-  const { grid } = state.shapeCentroid;
-  const meters = gridToMeters(grid);
-  centroidGridEl.textContent = `row ${formatDecimal(grid.row)}, col ${formatDecimal(
-    grid.col
-  )}`;
-  centroidMetersEl.textContent = `${formatDecimal(meters.x)} m, ${formatDecimal(
-    meters.y
-  )} m`;
+  if (shapeListEl) {
+    shapeListEl.innerHTML = "";
+    if (count === 0) {
+      const li = document.createElement("li");
+      li.classList.add("shape-list__empty");
+      li.textContent = "No shapes yet. Close a shape to store it.";
+      shapeListEl.append(li);
+    } else {
+      state.completedShapes.forEach((shape) => {
+        const meters = gridToMeters(shape.centroid.grid);
+        const li = document.createElement("li");
+        li.textContent = `Shape ${shape.id}: row ${formatDecimal(
+          shape.centroid.grid.row
+        )}, col ${formatDecimal(shape.centroid.grid.col)} | ${formatDecimal(
+          meters.x
+        )}m, ${formatDecimal(meters.y)}m`;
+        li.title = `Vertices: ${shape.vertices.length}`;
+        shapeListEl.append(li);
+      });
+    }
+  }
 }
 
 function gridToMeters(grid) {
@@ -505,31 +544,30 @@ function cellToMeters(cell) {
   return gridToMeters(grid);
 }
 
-function getCentroidData() {
-  if (!state.shapeCentroid) return null;
-  const { grid } = state.shapeCentroid;
-  const meters = gridToMeters(grid);
-  return {
-    grid: {
-      row: grid.row,
-      col: grid.col,
-    },
-    meters,
-  };
-}
-
-function getShapeVerticesData() {
-  if (!state.shapeClosed || state.vertices.length < 3) {
-    return [];
-  }
-  return state.vertices.map((vertex) => {
-    const grid = {
-      col: vertex.x / state.cellSize,
-      row: vertex.y / state.cellSize,
+function getShapesExportData() {
+  return state.completedShapes.map((shape) => {
+    const centroidMeters = gridToMeters(shape.centroid.grid);
+    const centroid = {
+      grid: {
+        row: shape.centroid.grid.row,
+        col: shape.centroid.grid.col,
+      },
+      meters: centroidMeters,
     };
+    const vertices = shape.vertices.map((vertex) => {
+      const grid = {
+        row: vertex.y / state.cellSize,
+        col: vertex.x / state.cellSize,
+      };
+      return {
+        grid,
+        meters: gridToMeters(grid),
+      };
+    });
     return {
-      grid,
-      meters: gridToMeters(grid),
+      id: shape.id,
+      centroid,
+      vertices,
     };
   });
 }
@@ -665,7 +703,7 @@ function handleCellSizeMetersChange(event) {
   const normalized = sanitizeCellSizeMeters(Number(target.value));
   state.cellSizeMeters = normalized;
   target.value = normalized;
-  updateCentroidDisplay();
+  updateShapeSummary();
   updatePythonPreview();
 }
 
@@ -836,33 +874,33 @@ function buildPythonSnippet() {
     .map((row) => `    [${row.join(", ")}]`)
     .join(",\n");
 
-  const attackerLines = state.attackers
-    .map((attacker) => formatAttackerForPython(attacker))
-    .join("\n");
+  const attackerLines = state.attackers.map((attacker) => formatAttackerForPython(attacker)).join("\n");
 
-  const centroid = getCentroidData();
-  const centroidBlock = centroid
+  const shapes = getShapesExportData();
+  const legacyCentroid = shapes[0]?.centroid ?? null;
+  const centroidBlock = legacyCentroid
     ? [
         "shape_centroid = {",
-        `    "grid": {"row": ${formatNumberForPython(
-          centroid.grid.row
-        )}, "col": ${formatNumberForPython(centroid.grid.col)}},`,
-        `    "meters": {"x": ${formatNumberForPython(
-          centroid.meters.x
-        )}, "y": ${formatNumberForPython(centroid.meters.y)}},`,
+        `    "grid": {"row": ${formatNumberForPython(legacyCentroid.grid.row)}, "col": ${formatNumberForPython(
+          legacyCentroid.grid.col
+        )}},`,
+        `    "meters": {"x": ${formatNumberForPython(legacyCentroid.meters.x)}, "y": ${formatNumberForPython(
+          legacyCentroid.meters.y
+        )}},`,
         "}",
       ]
     : ["shape_centroid = None"];
 
-  const vertexData = getShapeVerticesData();
+  const vertexData = shapes[0]?.vertices ?? [];
   const vertexBlock =
     vertexData.length > 0
-      ? [
-          "shape_vertices = [",
-          ...vertexData.map((vertex) => formatVertexForPython(vertex)),
-          "]",
-        ]
+      ? ["shape_vertices = [", ...vertexData.map((vertex) => formatVertexForPython(vertex)), "]"]
       : ["shape_vertices = []"];
+
+  const shapesBlock =
+    shapes.length > 0
+      ? ["shapes = [", ...shapes.map((shape) => formatShapeForPython(shape)), "]"]
+      : ["shapes = []"];
 
   return [
     "import numpy as np",
@@ -876,6 +914,8 @@ function buildPythonSnippet() {
     ...centroidBlock,
     "",
     ...vertexBlock,
+    "",
+    ...shapesBlock,
     "",
     "attackers = [",
     attackerLines || "    # Add attackers to populate this list",
@@ -891,12 +931,12 @@ function formatNumberForPython(value, digits = 4) {
   return Number(value.toFixed(digits)).toString();
 }
 
-function formatVertexForPython(vertex) {
+function formatVertexForPython(vertex, indent = "    ") {
   const row = formatNumberForPython(vertex.grid.row);
   const col = formatNumberForPython(vertex.grid.col);
   const x = formatNumberForPython(vertex.meters.x);
   const y = formatNumberForPython(vertex.meters.y);
-  return `    {"grid": {"row": ${row}, "col": ${col}}, "meters": {"x": ${x}, "y": ${y}}},`;
+  return `${indent}{"grid": {"row": ${row}, "col": ${col}}, "meters": {"x": ${x}, "y": ${y}}},`;
 }
 
 function formatCellPayloadForPython(cell) {
@@ -919,6 +959,30 @@ function formatAttackerForPython(attacker) {
     `        "start": ${start},`,
     `        "target": ${target},`,
     `    },`,
+  ].join("\n");
+}
+
+function formatShapeForPython(shape) {
+  const centroidRow = formatNumberForPython(shape.centroid.grid.row);
+  const centroidCol = formatNumberForPython(shape.centroid.grid.col);
+  const centroidX = formatNumberForPython(shape.centroid.meters.x);
+  const centroidY = formatNumberForPython(shape.centroid.meters.y);
+  const vertexLines =
+    shape.vertices.length > 0
+      ? shape.vertices.map((vertex) => formatVertexForPython(vertex, "            "))
+      : ["            # No vertices"];
+
+  return [
+    "    {",
+    `        "id": ${shape.id},`,
+    '        "centroid": {',
+    `            "grid": {"row": ${centroidRow}, "col": ${centroidCol}},`,
+    `            "meters": {"x": ${centroidX}, "y": ${centroidY}},`,
+    "        },",
+    '        "vertices": [',
+    ...vertexLines,
+    "        ],",
+    "    },",
   ].join("\n");
 }
 
@@ -950,37 +1014,35 @@ async function copyPythonSnippet() {
   }
 }
 
-function downloadJsonPayload(isAuto = false) {
+async function downloadJsonPayload() {
   if (!state.hasGrid) {
     updateStatus("Create a grid first.");
     return;
   }
   const payload = buildJsonPayload();
-  const blob = new Blob([JSON.stringify(payload, null, 2)], {
-    type: "application/json",
-  });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `grid-${state.rows}x${state.cols}.json`;
-  document.body.append(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-  if (!isAuto) {
-    updateStatus("JSON downloaded.");
+  const jsonString = JSON.stringify(payload, null, 2);
+
+  const savedViaPicker = await trySaveWithFileSystemAccess(jsonString);
+  if (savedViaPicker) {
+    updateStatus("JSON saved via file picker.");
+    return;
   }
+
+  fallbackDownload(jsonString);
+  updateStatus("JSON downloaded (browser default).");
 }
 
 function buildJsonPayload() {
-  const centroid = getCentroidData();
-  const vertices = getShapeVerticesData();
+  const shapes = getShapesExportData();
+  const legacyCentroid = shapes[0]?.centroid ?? null;
+  const legacyVertices = shapes[0]?.vertices ?? [];
   return {
     rows: state.rows,
     cols: state.cols,
     cellSizeMeters: state.cellSizeMeters,
-    centroid,
-    shapeVertices: vertices,
+    centroid: legacyCentroid,
+    shapeVertices: legacyVertices,
+    shapes,
     matrix: state.grid,
     attackers: state.attackers.map((attacker) => ({
       name: attacker.name,
@@ -989,6 +1051,44 @@ function buildJsonPayload() {
     })),
     generatedAt: new Date().toISOString(),
   };
+}
+
+async function trySaveWithFileSystemAccess(jsonString) {
+  if (!window.showSaveFilePicker) {
+    return false;
+  }
+  try {
+    const handle = await window.showSaveFilePicker({
+      suggestedName: `grid-${state.rows}x${state.cols}.json`,
+      types: [
+        {
+          description: "JSON Files",
+          accept: { "application/json": [".json"] },
+        },
+      ],
+    });
+    const writable = await handle.createWritable();
+    await writable.write(jsonString);
+    await writable.close();
+    return true;
+  } catch (error) {
+    if (error.name !== "AbortError") {
+      console.warn("File System Access API save failed:", error);
+    }
+    return false;
+  }
+}
+
+function fallbackDownload(jsonString) {
+  const blob = new Blob([jsonString], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `grid-${state.rows}x${state.cols}.json`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 function isPointInPolygon(point, polygon) {

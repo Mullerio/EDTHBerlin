@@ -134,6 +134,45 @@ body {
   font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
 }
 
+.panel__shapes {
+  margin-top: 0.75rem;
+  border-top: 1px solid color-mix(in srgb, CanvasText 15%, Canvas 85%);
+  padding-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.panel__shapes-summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.shape-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-family: "Roboto Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.85rem;
+}
+
+.shape-list li {
+  padding: 0.35rem 0.5rem;
+  border-radius: 0.45rem;
+  border: 1px dashed color-mix(in srgb, CanvasText 30%, Canvas 70%);
+  background: color-mix(in srgb, Canvas 92%, CanvasText 8%);
+}
+
+.shape-list__empty {
+  text-align: center;
+  font-style: italic;
+  color: color-mix(in srgb, CanvasText 60%, Canvas 40%);
+}
+
 .panel__zoom {
   display: flex;
   align-items: center;
