@@ -902,7 +902,7 @@ if __name__ == "__main__":
     # Uncomment to run a detector sweep (testing multiple detector counts)
     sweep_results = run_detector_sweep(
         json_path=project_root / "utils" / "realistic_example.json",
-        detector_counts=[15, 20, 25, 30],  # Test these detector counts
+        detector_counts=[15, 20, 25, 30, 40],  # Test these detector counts
         detector_type=detector_configs.DetectorType.VISUAL,
         sliding_window_sizes=[5, 10, 15, 30, 60],
         optimization_method='greedy+refine',
@@ -910,8 +910,8 @@ if __name__ == "__main__":
         waypoint_mode='grid_center',
         trajectory_noise_std=40.0,
         use_swarm_position=True,
-        swarm_spread=250.0,
-        attackers_per_swarm=3,
+        swarm_spread=350.0,
+        attackers_per_swarm=5,
         save_plots=True  # Set to True to save plots for with_detectors + non-observable case
     )
      
