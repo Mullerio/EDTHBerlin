@@ -1,14 +1,21 @@
 """
 Trial runner for detector optimization experiments.
 
-This module provides a function to run a single trial experiment:
-1. Load environment from JSON
-2. Analyze trajectories WITHOUT detectors
-3. Optimize detector placement
-4. Analyze trajectories WITH detectors
-5. Save results to CSV files
+This module provides two main functions:
 
-Results are saved for both include_observable_in_stats modes (True/False).
+1. run_single_trial(): Run a single experiment with a specific number of detectors
+   - Load environment from JSON
+   - Analyze trajectories WITHOUT detectors (baseline)
+   - Optimize detector placement
+   - Analyze trajectories WITH detectors
+   - Save results to CSV files and plots
+   - Supports minimal_mode for fast batch processing (no plots, non-observable only)
+
+2. run_detector_sweep(): Run multiple trials with different detector counts
+   - Tests a range of detector counts (e.g., [5, 10, 15, 20, 25])
+   - Always runs in minimal mode (no plots, non-observable only)
+   - Merges results into a single CSV showing how performance scales with detector count
+   - Ideal for parameter studies and optimization analysis
 """
 
 import csv
@@ -43,7 +50,9 @@ def run_single_trial(
     trajectory_noise_std: float = 0.0,
     use_swarm_position: bool = False,
     swarm_spread: float = 0.0,
-    attackers_per_swarm: int = 4
+    attackers_per_swarm: int = 4,
+    minimal_mode: bool = False,
+    save_plots: bool = True
 ) -> dict:
     """
     Run a single trial experiment with detector optimization.
@@ -104,6 +113,15 @@ def run_single_trial(
         attackers_per_swarm=3, this will generate 12 total attackers (3 per position).
         Each attacker in a swarm will have different start positions (based on spread)
         and different trajectory noise. Ignored when use_swarm_position=False.
+    minimal_mode : bool, default=False
+        If True, enables minimal mode: skips baseline analysis (always 0% without detectors)
+        and forces non-observable analysis only (both_observable_modes=False).
+        Does NOT override save_plots - plots can still be saved if save_plots=True.
+        Use this for fast batch processing, optionally with plots for detector analysis only.
+    save_plots : bool, default=True
+        If True, saves visualization plots for trajectories. If False, skips plot generation.
+        Can be used independently of minimal_mode (e.g., minimal_mode=True + save_plots=True
+        will skip baseline but save plots for with_detectors analysis).
         
     Returns
     -------
@@ -168,6 +186,14 @@ def run_single_trial(
     json_path = Path(json_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Apply minimal mode settings
+    # minimal_mode skips baseline and forces non-observable only
+    # but does NOT override save_plots (can be set independently)
+    if minimal_mode:
+        both_observable_modes = False
+        # Note: save_plots is NOT overridden by minimal_mode
+        # This allows saving plots while still skipping baseline
     
     # ========================================================================
     # STEP 1: Load JSON and build environment
@@ -290,122 +316,135 @@ def run_single_trial(
     # ========================================================================
     # STEP 2: Analyze trajectories WITHOUT detectors (baseline)
     # ========================================================================
-    print(f"\n{'='*70}")
-    print("STEP 2: Baseline Analysis (WITHOUT Detectors)")
-    print(f"{'='*70}")
+    # Initialize plots_dir to None (may be set later if baseline runs)
+    plots_dir = None
     
-    # Determine which modes to run
-    observable_modes = [False, True] if both_observable_modes else [False]
-    
-    # Create plots subdirectory
-    plots_dir = output_dir / "plots_baseline"
-    plots_dir.mkdir(parents=True, exist_ok=True)
-    
-    for include_observable in observable_modes:
-        mode_str = "INCLUDE" if include_observable else "EXCLUDE"
-        print(f"\nAnalyzing trajectories ({mode_str} observable regions)...")
+    # Skip baseline analysis in minimal mode (always 0% detection without detectors)
+    if not minimal_mode:
+        print(f"\n{'='*70}")
+        print("STEP 2: Baseline Analysis (WITHOUT Detectors)")
+        print(f"{'='*70}")
         
-        # Collect results for all trajectories
-        trajectory_results = []
+        # Determine which modes to run
+        observable_modes = [False, True] if both_observable_modes else [False]
         
-        for i, attacker in enumerate(attackers):
-            analysis = sector_env.analyze_trajectory(
-                attacker.trajectory,
-                time_per_step=1.0,
-                only_nonobservable=True,
-                include_observable_in_stats=include_observable
-            )
-            
-            # Save visualization plot for this trajectory
-            plot_filename = f"trajectory_{i}_{'include' if include_observable else 'exclude'}_observable.png"
-            plot_path = plots_dir / plot_filename
-            
-            # Create and save visualization (non-interactive, no display)
-            sector_env.visualize_trajectory_analysis(
-                attacker,
-                figsize=(14, 6),
-                include_observable_in_stats=include_observable
-            )
-            plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-            plt.close('all')  # Close all figures to free memory
-            
-            # Extract data
-            result = {
-                'trajectory_id': i,
-                'cumulative_detection_prob': analysis['cumulative_detection_prob'],
-                'avg_detection_per_second': analysis['avg_detection_per_second'],
-                'time_in_observable': analysis['time_in_observable'],
-                'time_in_nonobservable': analysis['time_in_nonobservable']
-            }
-            
-            # Extract sliding window statistics
-            sw_summary = analysis['sliding_window_stats']['summary']
-            for size in sliding_window_sizes:
-                size_key = f'{size}s'
-                if size_key in sw_summary:
-                    result[f'sliding_window_{size}s_min'] = sw_summary[size_key]['min']
-                    result[f'sliding_window_{size}s_max'] = sw_summary[size_key]['max']
-                    result[f'sliding_window_{size}s_mean'] = sw_summary[size_key]['mean']
-                else:
-                    result[f'sliding_window_{size}s_min'] = np.nan
-                    result[f'sliding_window_{size}s_max'] = np.nan
-                    result[f'sliding_window_{size}s_mean'] = np.nan
-            
-            trajectory_results.append(result)
+        # Create plots subdirectory (only if saving plots)
+        if save_plots:
+            plots_dir = output_dir / "plots_baseline"
+            plots_dir.mkdir(parents=True, exist_ok=True)
         
-        # Create combined visualization showing all trajectories together
-        if len(attackers) > 1:
-            print(f"Creating combined visualization with all {len(attackers)} trajectories...")
-            fig, ax = plt.subplots(1, 1, figsize=(12, 10))
-            sector_env.visualize(ax=ax, show=False, show_sectors=True)
+        for include_observable in observable_modes:
+            mode_str = "INCLUDE" if include_observable else "EXCLUDE"
+            print(f"\nAnalyzing trajectories ({mode_str} observable regions)...")
             
-            # Plot all trajectories
+            # Collect results for all trajectories
+            trajectory_results = []
+            
             for i, attacker in enumerate(attackers):
-                traj_arr = np.array(attacker.trajectory)
-                ax.plot(traj_arr[:, 0], traj_arr[:, 1], '-', linewidth=1.5, alpha=0.7, label=f'Traj {i}')
-                ax.plot(traj_arr[0, 0], traj_arr[0, 1], 'go', markersize=8, alpha=0.6)
-                ax.plot(traj_arr[-1, 0], traj_arr[-1, 1], 'rx', markersize=10, alpha=0.6)
+                analysis = sector_env.analyze_trajectory(
+                    attacker.trajectory,
+                    time_per_step=1.0,
+                    only_nonobservable=True,
+                    include_observable_in_stats=include_observable
+                )
+                
+                # Save visualization plot for this trajectory (if enabled)
+                if save_plots:
+                    plot_filename = f"trajectory_{i}_{'include' if include_observable else 'exclude'}_observable.png"
+                    plot_path = plots_dir / plot_filename
+                    
+                    # Create and save visualization (non-interactive, no display)
+                    sector_env.visualize_trajectory_analysis(
+                        attacker,
+                        figsize=(14, 6),
+                        include_observable_in_stats=include_observable
+                    )
+                    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+                    plt.close('all')  # Close all figures to free memory
+                
+                # Extract data
+                result = {
+                    'trajectory_id': i,
+                    'cumulative_detection_prob': analysis['cumulative_detection_prob'],
+                    'avg_detection_per_second': analysis['avg_detection_per_second'],
+                    'time_in_observable': analysis['time_in_observable'],
+                    'time_in_nonobservable': analysis['time_in_nonobservable']
+                }
+                
+                # Extract sliding window statistics
+                sw_summary = analysis['sliding_window_stats']['summary']
+                for size in sliding_window_sizes:
+                    size_key = f'{size}s'
+                    if size_key in sw_summary:
+                        result[f'sliding_window_{size}s_min'] = sw_summary[size_key]['min']
+                        result[f'sliding_window_{size}s_max'] = sw_summary[size_key]['max']
+                        result[f'sliding_window_{size}s_mean'] = sw_summary[size_key]['mean']
+                    else:
+                        result[f'sliding_window_{size}s_min'] = np.nan
+                        result[f'sliding_window_{size}s_max'] = np.nan
+                        result[f'sliding_window_{size}s_mean'] = np.nan
+                
+                trajectory_results.append(result)
             
-            ax.set_title(f'All {len(attackers)} Trajectories - Baseline')
-            # Only show legend if not too many trajectories
-            if len(attackers) <= 20:
-                ax.legend(loc='upper right', fontsize=8, ncol=2)
+            # Create combined visualization showing all trajectories together (if enabled)
+            if save_plots and len(attackers) > 1:
+                print(f"Creating combined visualization with all {len(attackers)} trajectories...")
+                fig, ax = plt.subplots(1, 1, figsize=(12, 10))
+                sector_env.visualize(ax=ax, show=False, show_sectors=True)
+                
+                # Plot all trajectories
+                for i, attacker in enumerate(attackers):
+                    traj_arr = np.array(attacker.trajectory)
+                    ax.plot(traj_arr[:, 0], traj_arr[:, 1], '-', linewidth=1.5, alpha=0.7, label=f'Traj {i}')
+                    ax.plot(traj_arr[0, 0], traj_arr[0, 1], 'go', markersize=8, alpha=0.6)
+                    ax.plot(traj_arr[-1, 0], traj_arr[-1, 1], 'rx', markersize=10, alpha=0.6)
+                
+                ax.set_title(f'All {len(attackers)} Trajectories - Baseline')
+                # Only show legend if not too many trajectories
+                if len(attackers) <= 20:
+                    ax.legend(loc='upper right', fontsize=8, ncol=2)
+                
+                # Save combined plot
+                combined_plot_filename = f"all_trajectories_{'include' if include_observable else 'exclude'}_observable.png"
+                combined_plot_path = plots_dir / combined_plot_filename
+                plt.savefig(combined_plot_path, dpi=150, bbox_inches='tight')
+                plt.close('all')
+                print(f"   Saved combined plot to {combined_plot_filename}")
             
-            # Save combined plot
-            combined_plot_filename = f"all_trajectories_{'include' if include_observable else 'exclude'}_observable.png"
-            combined_plot_path = plots_dir / combined_plot_filename
-            plt.savefig(combined_plot_path, dpi=150, bbox_inches='tight')
-            plt.close('all')
-            print(f"   Saved combined plot to {combined_plot_filename}")
-        
-        # Calculate means across all trajectories
-        mean_result = {'trajectory_id': 'MEAN'}
-        
-        # Get all numeric keys
-        numeric_keys = [k for k in trajectory_results[0].keys() if k != 'trajectory_id']
-        
-        for key in numeric_keys:
-            values = [r[key] for r in trajectory_results if not np.isnan(r[key])]
-            mean_result[key] = np.mean(values) if values else np.nan
-        
-        trajectory_results.append(mean_result)
-        
-        # Save to CSV
-        csv_filename = f"baseline_{'include' if include_observable else 'exclude'}_observable.csv"
-        csv_path = output_dir / csv_filename
-        
-        with open(csv_path, 'w', newline='') as csvfile:
-            fieldnames = ['trajectory_id'] + numeric_keys
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            # Calculate means across all trajectories
+            mean_result = {'trajectory_id': 'MEAN'}
             
-            writer.writeheader()
-            for result in trajectory_results:
-                writer.writerow(result)
-        
-        print(f"✅ Saved baseline results to {csv_path}")
-        print(f"   Trajectories analyzed: {len(attackers)}")
-        print(f"   Mean cumulative detection: {mean_result['cumulative_detection_prob']:.2%}")
-        print(f"   Mean detection per second: {mean_result['avg_detection_per_second']:.4%}")
+            # Get all numeric keys
+            numeric_keys = [k for k in trajectory_results[0].keys() if k != 'trajectory_id']
+            
+            for key in numeric_keys:
+                values = [r[key] for r in trajectory_results if not np.isnan(r[key])]
+                mean_result[key] = np.mean(values) if values else np.nan
+            
+            trajectory_results.append(mean_result)
+            
+            # Save to CSV
+            csv_filename = f"baseline_{'include' if include_observable else 'exclude'}_observable.csv"
+            csv_path = output_dir / csv_filename
+            
+            with open(csv_path, 'w', newline='') as csvfile:
+                fieldnames = ['trajectory_id'] + numeric_keys
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                
+                writer.writeheader()
+                for result in trajectory_results:
+                    writer.writerow(result)
+            
+            print(f"✅ Saved baseline results to {csv_path}")
+            print(f"   Trajectories analyzed: {len(attackers)}")
+            print(f"   Mean cumulative detection: {mean_result['cumulative_detection_prob']:.2%}")
+            print(f"   Mean detection per second: {mean_result['avg_detection_per_second']:.4%}")
+    else:
+        # Minimal mode: skip baseline analysis (always 0% without detectors)
+        print(f"\n{'='*70}")
+        print("STEP 2: Baseline Analysis - SKIPPED (minimal mode)")
+        print(f"{'='*70}")
+        print("Baseline analysis skipped in minimal mode (always 0% detection without detectors)")
     
     # ========================================================================
     # STEP 3: Optimize detector positions
@@ -453,9 +492,15 @@ def run_single_trial(
     
     csv_files = []
     
-    # Create plots subdirectory for with-detectors analysis
-    plots_dir_detectors = output_dir / "plots_with_detectors"
-    plots_dir_detectors.mkdir(parents=True, exist_ok=True)
+    # Determine which modes to run for detector analysis
+    # In minimal mode, always use only non-observable (include_observable_in_stats=False)
+    observable_modes = [False, True] if both_observable_modes else [False]
+    
+    # Create plots subdirectory for with-detectors analysis (only if saving plots)
+    plots_dir_detectors = None
+    if save_plots:
+        plots_dir_detectors = output_dir / "plots_with_detectors"
+        plots_dir_detectors.mkdir(parents=True, exist_ok=True)
     
     for include_observable in observable_modes:
         mode_str = "INCLUDE" if include_observable else "EXCLUDE"
@@ -472,18 +517,19 @@ def run_single_trial(
                 include_observable_in_stats=include_observable
             )
             
-            # Save visualization plot for this trajectory
-            plot_filename = f"trajectory_{i}_{'include' if include_observable else 'exclude'}_observable.png"
-            plot_path = plots_dir_detectors / plot_filename
-            
-            # Create and save visualization (non-interactive, no display)
-            sector_env.visualize_trajectory_analysis(
-                attacker,
-                figsize=(14, 6),
-                include_observable_in_stats=include_observable
-            )
-            plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-            plt.close('all')  # Close all figures to free memory
+            # Save visualization plot for this trajectory (if enabled)
+            if save_plots:
+                plot_filename = f"trajectory_{i}_{'include' if include_observable else 'exclude'}_observable.png"
+                plot_path = plots_dir_detectors / plot_filename
+                
+                # Create and save visualization (non-interactive, no display)
+                sector_env.visualize_trajectory_analysis(
+                    attacker,
+                    figsize=(14, 6),
+                    include_observable_in_stats=include_observable
+                )
+                plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+                plt.close('all')  # Close all figures to free memory
             
             # Extract data
             result = {
@@ -509,8 +555,8 @@ def run_single_trial(
             
             trajectory_results.append(result)
         
-        # Create combined visualization showing all trajectories together
-        if len(attackers) > 1:
+        # Create combined visualization showing all trajectories together (if enabled)
+        if save_plots and len(attackers) > 1:
             print(f"Creating combined visualization with all {len(attackers)} trajectories...")
             fig, ax = plt.subplots(1, 1, figsize=(12, 10))
             sector_env.visualize(ax=ax, show=False, show_sectors=True)
@@ -573,11 +619,14 @@ def run_single_trial(
     print(f"{'='*70}")
     print(f"Results saved to: {output_dir}")
     print(f"CSV files generated: {len(csv_files) + len(observable_modes)}")
-    print(f"Baseline plots saved to: {plots_dir}")
-    print(f"Detector plots saved to: {plots_dir_detectors}")
-    individual_plots = len(attackers) * len(observable_modes) * 2
-    combined_plots = len(observable_modes) * 2 if len(attackers) > 1 else 0
-    print(f"Total plots generated: {individual_plots + combined_plots} ({individual_plots} individual + {combined_plots} combined)")
+    if save_plots:
+        print(f"Baseline plots saved to: {plots_dir}")
+        print(f"Detector plots saved to: {plots_dir_detectors}")
+        individual_plots = len(attackers) * len(observable_modes) * 2
+        combined_plots = len(observable_modes) * 2 if len(attackers) > 1 else 0
+        print(f"Total plots generated: {individual_plots + combined_plots} ({individual_plots} individual + {combined_plots} combined)")
+    else:
+        print(f"Plot generation: DISABLED (minimal mode)")
     
     return {
         'json_path': str(json_path),
@@ -588,8 +637,212 @@ def run_single_trial(
         'detector_metrics': detector_metrics,
         'csv_files': csv_files,
         'output_dir': str(output_dir),
-        'plots_baseline_dir': str(plots_dir),
-        'plots_detectors_dir': str(plots_dir_detectors)
+        'plots_baseline_dir': str(plots_dir) if plots_dir else None,
+        'plots_detectors_dir': str(plots_dir_detectors) if plots_dir_detectors else None
+    }
+
+
+def run_detector_sweep(
+    json_path: str | Path,
+    detector_counts: list[int],
+    detector_type: detector_configs.DetectorType,
+    sliding_window_sizes: list[int],
+    optimization_method: Literal['greedy', 'refined', 'greedy+refine'],
+    output_dir: str | Path,
+    default_drone_speed: float = 50.0,
+    waypoint_mode: Literal['shapes', 'grid_center', 'none'] = 'shapes',
+    trajectory_noise_std: float = 0.0,
+    use_swarm_position: bool = False,
+    swarm_spread: float = 0.0,
+    attackers_per_swarm: int = 1,
+    save_plots: bool = False
+) -> dict:
+    """
+    Run multiple trials with different detector counts and merge results into a single CSV.
+    
+    This function is designed for batch processing to analyze how detection performance
+    scales with the number of detectors. It runs in minimal mode (no plots, only non-observable
+    analysis) to maximize speed.
+    
+    Parameters
+    ----------
+    json_path : str or Path
+        Path to the JSON file containing the grid configuration
+    detector_counts : list[int]
+        List of detector counts to test (e.g., [5, 10, 15, 20, 25])
+    detector_type : DetectorType
+        Type of detector to use (VISUAL, RADAR, ACOUSTIC, BASE)
+    sliding_window_sizes : list[int]
+        List of sliding window sizes in seconds (e.g., [5, 10, 15, 30, 60])
+    optimization_method : {'greedy', 'refined', 'greedy+refine'}
+        Optimization method for detector placement
+    output_dir : str or Path
+        Directory to save output files
+    default_drone_speed : float, default=50.0
+        Default speed for attacker drones in m/s
+    waypoint_mode : {'shapes', 'grid_center', 'none'}, default='shapes'
+        Waypoint strategy for drone trajectories
+    trajectory_noise_std : float, default=0.0
+        Standard deviation of Gaussian noise for trajectories (in meters)
+    use_swarm_position : bool, default=False
+        If True, use swarm positioning mode
+    swarm_spread : float, default=0.0
+        Spread radius for swarm positioning (in meters)
+    attackers_per_swarm : int, default=1
+        Number of attackers per swarm position
+    save_plots : bool, default=False
+        If True, saves trajectory plots for the with_detectors + non-observable case only.
+        Individual trajectory plots and combined "all trajectories" plot will be saved.
+        Plots are saved to: output_dir/n{X}_detectors/plots_with_detectors/
+        
+    Returns
+    -------
+    dict
+        Dictionary containing:
+        - 'sweep_csv_path': Path to the merged CSV with all detector counts
+        - 'individual_results': List of individual trial results
+        - 'detector_counts': List of detector counts tested
+        
+    Output CSV Format
+    -----------------
+    The merged CSV contains one row per detector count with columns:
+    - n_detectors: Number of detectors
+    - mean_cumulative_detection_prob: Average cumulative detection across all trajectories
+    - mean_avg_detection_per_second: Average per-second detection probability
+    - mean_time_in_observable: Average time in observable regions
+    - mean_time_in_nonobservable: Average time in non-observable regions
+    - mean_sliding_window_{size}s_min/max/mean: Sliding window statistics
+    - detector_optimization_time: Time taken for detector optimization
+    - mean_coverage: Detector coverage metric
+    - min_coverage: Minimum coverage metric
+    - fraction_covered: Fraction of area covered
+    
+    Example
+    -------
+    >>> results = run_detector_sweep(
+    ...     json_path="grid.json",
+    ...     detector_counts=[5, 10, 15, 20, 25],
+    ...     detector_type=DetectorType.VISUAL,
+    ...     sliding_window_sizes=[5, 10, 15, 30, 60],
+    ...     optimization_method='greedy+refine',
+    ...     output_dir="results/sweep_001"
+    ... )
+    >>> print(f"Sweep CSV saved to: {results['sweep_csv_path']}")
+    """
+    import time
+    
+    # Convert paths
+    json_path = Path(json_path)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    print(f"{'='*70}")
+    print(f"DETECTOR SWEEP: Testing {len(detector_counts)} detector counts")
+    print(f"{'='*70}")
+    print(f"Detector counts: {detector_counts}")
+    print(f"Detector type: {detector_type.value}")
+    mode_desc = "WITH plots" if save_plots else "no plots"
+    print(f"Mode: Non-observable only, {mode_desc}")
+    print(f"Output directory: {output_dir}")
+    print(f"{'='*70}\n")
+    
+    individual_results = []
+    sweep_data = []
+    
+    for i, n_det in enumerate(detector_counts, 1):
+        print(f"\n{'='*70}")
+        print(f"SWEEP {i}/{len(detector_counts)}: n_detectors = {n_det}")
+        print(f"{'='*70}")
+        
+        # Create subdirectory for this detector count
+        trial_output_dir = output_dir / f"n{n_det}_detectors"
+        
+        start_time = time.time()
+        
+        # Run trial - use custom settings for sweep mode
+        # Sweep mode: ALWAYS skip baseline, only non-observable analysis, optionally save plots
+        # Note: minimal_mode controls baseline skipping, so we always set it to True for sweeps
+        trial_result = run_single_trial(
+            json_path=json_path,
+            n_detectors=n_det,
+            detector_type=detector_type,
+            sliding_window_sizes=sliding_window_sizes,
+            optimization_method=optimization_method,
+            output_dir=trial_output_dir,
+            default_drone_speed=default_drone_speed,
+            waypoint_mode=waypoint_mode,
+            trajectory_noise_std=trajectory_noise_std,
+            use_swarm_position=use_swarm_position,
+            swarm_spread=swarm_spread,
+            attackers_per_swarm=attackers_per_swarm,
+            minimal_mode=True,  # ALWAYS True for sweeps - skips baseline
+            both_observable_modes=False,  # Always only non-observable for sweeps
+            save_plots=save_plots  # Optionally save plots for with_detectors case
+        )
+        
+        elapsed_time = time.time() - start_time
+        
+        individual_results.append(trial_result)
+        
+        # Read the baseline CSV to get MEAN statistics
+        baseline_csv = trial_output_dir / "baseline_exclude_observable.csv"
+        with_detectors_csv = trial_output_dir / "with_detectors_exclude_observable.csv"
+        
+        # Extract MEAN row from with_detectors CSV
+        with open(with_detectors_csv, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row['trajectory_id'] == 'MEAN':
+                    sweep_row = {
+                        'n_detectors': n_det,
+                        'optimization_time_seconds': elapsed_time
+                    }
+                    
+                    # Add all numeric columns from MEAN row
+                    for key, value in row.items():
+                        if key != 'trajectory_id':
+                            try:
+                                sweep_row[f'mean_{key}'] = float(value)
+                            except (ValueError, TypeError):
+                                sweep_row[f'mean_{key}'] = np.nan
+                    
+                    # Add detector metrics
+                    sweep_row['detector_mean_coverage'] = trial_result['detector_metrics'].get('mean_coverage', np.nan)
+                    sweep_row['detector_min_coverage'] = trial_result['detector_metrics'].get('min_coverage', np.nan)
+                    sweep_row['detector_fraction_covered'] = trial_result['detector_metrics'].get('fraction_covered', np.nan)
+                    
+                    sweep_data.append(sweep_row)
+                    break
+        
+        print(f"\n✅ Completed n_detectors={n_det} in {elapsed_time:.1f}s")
+        print(f"   Mean cumulative detection: {sweep_row['mean_cumulative_detection_prob']:.2%}")
+        print(f"   Detector coverage: {sweep_row['detector_fraction_covered']:.2%}")
+    
+    # Save merged sweep CSV
+    sweep_csv_path = output_dir / "detector_sweep_results.csv"
+    
+    if sweep_data:
+        fieldnames = list(sweep_data[0].keys())
+        
+        with open(sweep_csv_path, 'w', newline='') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in sweep_data:
+                writer.writerow(row)
+        
+        print(f"\n{'='*70}")
+        print("SWEEP COMPLETE")
+        print(f"{'='*70}")
+        print(f"✅ Merged sweep CSV saved to: {sweep_csv_path}")
+        print(f"   Tested {len(detector_counts)} detector counts")
+        print(f"   Total trials: {len(individual_results)}")
+        print(f"   Individual trial CSVs: {len(individual_results) * 2} (baseline + with_detectors)")
+    
+    return {
+        'sweep_csv_path': str(sweep_csv_path),
+        'individual_results': individual_results,
+        'detector_counts': detector_counts,
+        'output_dir': str(output_dir)
     }
 
 
@@ -600,10 +853,10 @@ if __name__ == "__main__":
     # Get the project root directory (parent of src/)
     project_root = Path(__file__).parent.parent
     
-    # Example trial with shape centroids waypoints (default)
+    """# Example trial with shape centroids waypoints (default)
     results = run_single_trial(
-        json_path=project_root / "utils" / "basic_notreal.json",
-        n_detectors=10,
+        json_path=project_root / "utils" / "realistic_example.json",
+        n_detectors=25,
         detector_type=detector_configs.DetectorType.VISUAL,
         sliding_window_sizes=[5, 10, 15, 30, 60],
         optimization_method='greedy+refine',
@@ -618,7 +871,7 @@ if __name__ == "__main__":
     print(f"\n\nTrial metadata:")
     for key, value in results.items():
         if key != 'detector_positions':  # Skip printing all positions
-            print(f"  {key}: {value}")
+            print(f"  {key}: {value}")"""
     
     # ========================================================================
     # Configuration Examples:
@@ -638,3 +891,28 @@ if __name__ == "__main__":
     # use_swarm_position=True      # Enable swarm mode
     # swarm_spread=50.0            # Individual attackers spread 50m around center
     #                              # trajectory_noise_std applies to each swarm attacker
+    
+    # Minimal mode (fast batch processing):
+    # minimal_mode=True            # No plots, only non-observable analysis
+    
+    # ========================================================================
+    # Detector Sweep Example:
+    # ========================================================================
+    
+    # Uncomment to run a detector sweep (testing multiple detector counts)
+    sweep_results = run_detector_sweep(
+        json_path=project_root / "utils" / "realistic_example.json",
+        detector_counts=[15, 20, 25, 30],  # Test these detector counts
+        detector_type=detector_configs.DetectorType.VISUAL,
+        sliding_window_sizes=[5, 10, 15, 30, 60],
+        optimization_method='greedy+refine',
+        output_dir=project_root / "results" / "sweep_example",
+        waypoint_mode='grid_center',
+        trajectory_noise_std=40.0,
+        use_swarm_position=True,
+        swarm_spread=250.0,
+        attackers_per_swarm=3,
+        save_plots=True  # Set to True to save plots for with_detectors + non-observable case
+    )
+     
+    print(f"\n\nSweep results saved to: {sweep_results['sweep_csv_path']}")
