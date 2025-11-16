@@ -6,8 +6,4 @@ Building Simulation Environment to test different detection methods for low flyi
 
 Simulation TODO: 
 
-
-Do one realistic config 
-Give option to not use midpoints 
-Give option to generate stuff without using any midpoints 
-Give option to generate midpoint as being the "center of the grid" 
+Do some Statistical ANalysis, run on realistic grid -> for full runs see trial_runner (but they might take some time)
