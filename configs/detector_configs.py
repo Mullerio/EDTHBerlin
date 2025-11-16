@@ -168,7 +168,7 @@ class VisualDetectorConfig2:
 class VisualDetectorConfig:
     """Configuration for a visual detector."""
 
-    radius: float = 750
+    radius: float = 850
     
     def __post_init__(self):
         # Calculate distance_probability_map based on radius

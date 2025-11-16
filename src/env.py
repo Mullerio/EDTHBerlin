@@ -144,7 +144,7 @@ class Environment:
 
         _plot_list(self.atk_drones, 'red', 'attack')
         _plot_list(self.def_drones, 'green', 'defend')
-        _plot_list(self.detectors, 'blue', 'detect')
+        _plot_list(self.detectors, 'gold', 'detect')
 
         # Overlay detector probability distributions using the main environment grid
         # This avoids rectangular local-grid artifacts by computing an RGBA image
@@ -194,9 +194,9 @@ class Environment:
             rgba = colors.reshape(self.height, self.width, 4)
             ax.imshow(rgba, origin='lower', extent=(0, physical_width, 0, physical_height), zorder=5)
 
-            # Draw detector radius outline if available (in physical coordinates)
+            # Draw detector radius circle with yellow fill (in physical coordinates)
             if r is not None:
-                circ = Circle((cx, cy), r, edgecolor='blue', facecolor='none', linestyle='--', linewidth=1)
+                circ = Circle((cx, cy), r, edgecolor='orange', facecolor='yellow', alpha=0.3, linewidth=2)
                 ax.add_patch(circ)
 
         ax.set_xlim(0, physical_width)
@@ -254,7 +254,7 @@ class Environment:
             ax.scatter(pts[:, 0], pts[:, 1], c=color, label=label, edgecolors='k', s=100)
 
         _plot_list(self.def_drones, 'green', 'defend')
-        _plot_list(self.detectors, 'blue', 'detect')
+        _plot_list(self.detectors, 'gold', 'detect')
 
         for det in self.detectors:
             try:
@@ -292,7 +292,7 @@ class Environment:
             rgba = colors.reshape(self.height, self.width, 4)
             ax.imshow(rgba, origin='lower', extent=(0, physical_width, 0, physical_height), zorder=5)
             if r is not None:
-                circ = Circle((cx, cy), r, edgecolor='blue', facecolor='none', linestyle='--', linewidth=1)
+                circ = Circle((cx, cy), r, edgecolor='orange', facecolor='yellow', alpha=0.3, linewidth=2)
                 ax.add_patch(circ)
 
         ax.set_xlim(0, physical_width)
@@ -851,22 +851,22 @@ class SectorEnv(Environment):
         physical_height = self.height * self.cell_size
         
         if show_sectors:
-            # Create a mask overlay: green tint for observable, red tint for non-observable
+            # Create a mask overlay: yellow tint for observable, light blue tint for non-observable
             sector_overlay = np.zeros((self.height, self.width, 4))
             
-            # Observable regions: slight green tint
-            sector_overlay[self.observable_mask, :] = [0.0, 1.0, 0.0, 0.15]
+            # Observable regions: yellow tint (much more visible)
+            sector_overlay[self.observable_mask, :] = [1.0, 1.0, 0.0, 0.5]
             
-            # Non-observable regions: slight red tint
-            sector_overlay[~self.observable_mask, :] = [1.0, 0.0, 0.0, 0.15]
+            # Non-observable regions: light blue tint (much more visible)
+            sector_overlay[~self.observable_mask, :] = [0.5, 0.7, 1.0, 0.5]
             
             ax.imshow(sector_overlay, origin='lower', extent=(0, physical_width, 0, physical_height), zorder=1)
             
             # Add legend entries for sectors
             from matplotlib.patches import Patch
             legend_elements = [
-                Patch(facecolor='green', alpha=0.3, label='Observable'),
-                Patch(facecolor='red', alpha=0.3, label='Non-observable')
+                Patch(facecolor='yellow', alpha=0.3, label='Observable'),
+                Patch(facecolor='lightblue', alpha=0.3, label='Non-observable')
             ]
             handles, labels = ax.get_legend_handles_labels()
             ax.legend(handles=handles + legend_elements, loc='upper right')
