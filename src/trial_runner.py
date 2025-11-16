@@ -39,8 +39,11 @@ def run_single_trial(
     output_dir: str | Path,
     both_observable_modes: bool = True,
     default_drone_speed: float = 50.0,
-    use_centroid_as_waypoint: bool = True,
-    use_shape_centroids_as_waypoints: bool = True
+    waypoint_mode: Literal['shapes', 'grid_center', 'none'] = 'shapes',
+    trajectory_noise_std: float = 0.0,
+    use_swarm_position: bool = False,
+    swarm_spread: float = 0.0,
+    attackers_per_swarm: int = 4
 ) -> dict:
     """
     Run a single trial experiment with detector optimization.
@@ -74,10 +77,33 @@ def run_single_trial(
         If False, only analyze with include_observable_in_stats=False
     default_drone_speed : float, default=50.0
         Default speed for attacker drones in m/s
-    use_centroid_as_waypoint : bool, default=True
-        Whether to use shape centroids as waypoints
-    use_shape_centroids_as_waypoints : bool, default=True
-        Whether to use greedy nearest-neighbor for multiple shape centroids
+    waypoint_mode : {'shapes', 'grid_center', 'none'}, default='shapes'
+        Waypoint strategy for drone trajectories:
+        - 'shapes': Use shape centroids with greedy nearest-neighbor (default)
+        - 'grid_center': All drones fly to grid center, then to target
+        - 'none': Direct straight line from start to target (no waypoints)
+    trajectory_noise_std : float, default=0.0
+        Standard deviation of Gaussian noise to add to trajectory waypoints (in meters)
+        If 0.0, no noise is added. Recommended values: 5.0-50.0 for realistic deviation.
+        Noise is ALWAYS applied during trajectory generation (not post-processing) to
+        ensure proper timing and distance calculations:
+        - When use_swarm_position=True: Applied by swarm class during generation
+        - When use_swarm_position=False: Trajectories regenerated with noise_std parameter
+    use_swarm_position : bool, default=False
+        If True, treat attacker positions as swarm center positions instead of individual
+        attacker positions. Each attacker's actual position is sampled around the swarm
+        center based on swarm_spread parameter. trajectory_noise_std is used for swarm
+        trajectory noise.
+    swarm_spread : float, default=0.0
+        When use_swarm_position=True, this is the spread radius (in meters) for sampling
+        individual attacker positions around the swarm center. Each attacker's start
+        position is uniformly sampled within [-spread, +spread] in each dimension.
+    attackers_per_swarm : int, default=1
+        When use_swarm_position=True, this is the number of attackers to generate per
+        swarm position. For example, if the JSON has 4 attacker positions and 
+        attackers_per_swarm=3, this will generate 12 total attackers (3 per position).
+        Each attacker in a swarm will have different start positions (based on spread)
+        and different trajectory noise. Ignored when use_swarm_position=False.
         
     Returns
     -------
@@ -147,6 +173,18 @@ def run_single_trial(
     # STEP 1: Load JSON and build environment
     # ========================================================================
     print(f"Loading environment from {json_path}...")
+    
+    # Configure waypoint settings based on mode
+    if waypoint_mode == 'shapes':
+        use_centroid_as_waypoint = True
+        use_shape_centroids_as_waypoints = True
+    elif waypoint_mode == 'grid_center':
+        use_centroid_as_waypoint = False  # Don't use shape centroids
+        use_shape_centroids_as_waypoints = False
+    else:  # waypoint_mode == 'none'
+        use_centroid_as_waypoint = False
+        use_shape_centroids_as_waypoints = False
+    
     sector_env, attackers, grid_data = load_and_build_env(
         json_path,
         default_drone_speed=default_drone_speed,
@@ -154,10 +192,100 @@ def run_single_trial(
         use_shape_centroids_as_waypoints=use_shape_centroids_as_waypoints
     )
     
+    # Apply trajectory noise or swarm positioning
+    if use_swarm_position:
+        from src.attackers import AttackerSwarm
+        
+        print(f"Using swarm positions (spread={swarm_spread}m, trajectory_noise={trajectory_noise_std}m, {attackers_per_swarm} attackers/swarm)...")
+        
+        # Group attackers by their original start positions to create swarms
+        swarm_dict = {}
+        for attacker in attackers:
+            start_key = attacker.start_position
+            if start_key not in swarm_dict:
+                swarm_dict[start_key] = []
+            swarm_dict[start_key].append(attacker)
+        
+        # Generate new attackers using swarm positions
+        new_attackers = []
+        for swarm_center, attacker_group in swarm_dict.items():
+            # Collect waypoints and targets from original attackers
+            waypoints_to_use = None
+            if len(attacker_group) > 0 and attacker_group[0].waypoints:
+                waypoints_to_use = attacker_group[0].waypoints
+            
+            # Create a swarm for each original attacker in this group
+            for attacker in attacker_group:
+                swarm = AttackerSwarm(
+                    start_position=swarm_center,
+                    target_positions=[attacker.target_position],
+                    number_of_attackers=attackers_per_swarm,  # Generate multiple attackers per swarm
+                    spread=swarm_spread,
+                    noise_std=trajectory_noise_std,  # Use trajectory_noise_std for swarm noise
+                    waypoints=waypoints_to_use
+                )
+                # Generate attackers from swarm (with spread and noise applied)
+                swarm_attackers = swarm.generate_swarm(
+                    steps=len(attacker.trajectory),
+                    speed=default_drone_speed
+                )
+                new_attackers.extend(swarm_attackers)
+        
+        attackers = new_attackers
+        original_count = len(swarm_dict) * len(next(iter(swarm_dict.values())))
+        print(f"   Generated {len(attackers)} attackers from {original_count} base positions ({attackers_per_swarm} per swarm)")
+        
+        # IMPORTANT: Update the environment's atk_drones list to reflect the new swarm attackers
+        # This ensures visualizations show the actual swarm members, not the old swarm centers
+        sector_env.atk_drones = attackers
+        print(f"   Updated environment to track {len(attackers)} swarm attackers")
+    
+    elif trajectory_noise_std > 0.0:
+        # Not using swarm, but want noise during trajectory generation
+        print(f"Regenerating trajectories with noise (std={trajectory_noise_std}m)...")
+        for i, attacker in enumerate(attackers):
+            # Update attacker's noise_std and regenerate trajectory
+            attacker.noise_std = trajectory_noise_std
+            attacker.trajectory = attacker.generate_trajectory()
+        print(f"   Regenerated {len(attackers)} trajectories with noise applied during generation")
+    
+    # Override waypoints based on mode
+    if waypoint_mode == 'grid_center':
+        # Calculate grid center
+        grid_center_x = (sector_env.width * sector_env.cell_size) / 2
+        grid_center_y = (sector_env.height * sector_env.cell_size) / 2
+        grid_center = (grid_center_x, grid_center_y)
+        
+        print(f"Overriding waypoints to grid center: {grid_center}")
+        
+        # Override all attacker waypoints to use grid center
+        for i, attacker in enumerate(attackers):
+            old_waypoints = attacker.waypoints
+            attacker.waypoints = [grid_center]
+            # Regenerate trajectory with new waypoint - MUST assign back to trajectory!
+            attacker.trajectory = attacker.generate_trajectory()
+            print(f"   Attacker {i}: waypoints changed from {old_waypoints} to {attacker.waypoints}")
+            print(f"   Attacker {i}: trajectory regenerated with {len(attacker.trajectory)} points")
+    
+    elif waypoint_mode == 'none':
+        # Remove all waypoints - direct line to target
+        print(f"Removing all waypoints for direct trajectories")
+        for i, attacker in enumerate(attackers):
+            old_waypoints = attacker.waypoints
+            attacker.waypoints = None
+            # Regenerate trajectory without waypoints - MUST assign back to trajectory!
+            attacker.trajectory = attacker.generate_trajectory()
+            print(f"   Attacker {i}: waypoints changed from {old_waypoints} to None")
+    
     print(f"✅ Environment loaded:")
     print(f"   Grid: {sector_env.width}×{sector_env.height} cells @ {sector_env.cell_size}m/cell")
     print(f"   Shapes: {len(grid_data.shapes)}")
     print(f"   Attackers: {len(attackers)}")
+    print(f"   Waypoint mode: {waypoint_mode}")
+    if use_swarm_position:
+        print(f"   Swarm mode: ENABLED (spread={swarm_spread}m, {attackers_per_swarm} attackers/swarm, trajectory_noise={trajectory_noise_std}m)")
+    else:
+        print(f"   Trajectory noise: {trajectory_noise_std}m std")
     
     # ========================================================================
     # STEP 2: Analyze trajectories WITHOUT detectors (baseline)
@@ -224,6 +352,31 @@ def run_single_trial(
                     result[f'sliding_window_{size}s_mean'] = np.nan
             
             trajectory_results.append(result)
+        
+        # Create combined visualization showing all trajectories together
+        if len(attackers) > 1:
+            print(f"Creating combined visualization with all {len(attackers)} trajectories...")
+            fig, ax = plt.subplots(1, 1, figsize=(12, 10))
+            sector_env.visualize(ax=ax, show=False, show_sectors=True)
+            
+            # Plot all trajectories
+            for i, attacker in enumerate(attackers):
+                traj_arr = np.array(attacker.trajectory)
+                ax.plot(traj_arr[:, 0], traj_arr[:, 1], '-', linewidth=1.5, alpha=0.7, label=f'Traj {i}')
+                ax.plot(traj_arr[0, 0], traj_arr[0, 1], 'go', markersize=8, alpha=0.6)
+                ax.plot(traj_arr[-1, 0], traj_arr[-1, 1], 'rx', markersize=10, alpha=0.6)
+            
+            ax.set_title(f'All {len(attackers)} Trajectories - Baseline')
+            # Only show legend if not too many trajectories
+            if len(attackers) <= 20:
+                ax.legend(loc='upper right', fontsize=8, ncol=2)
+            
+            # Save combined plot
+            combined_plot_filename = f"all_trajectories_{'include' if include_observable else 'exclude'}_observable.png"
+            combined_plot_path = plots_dir / combined_plot_filename
+            plt.savefig(combined_plot_path, dpi=150, bbox_inches='tight')
+            plt.close('all')
+            print(f"   Saved combined plot to {combined_plot_filename}")
         
         # Calculate means across all trajectories
         mean_result = {'trajectory_id': 'MEAN'}
@@ -356,6 +509,31 @@ def run_single_trial(
             
             trajectory_results.append(result)
         
+        # Create combined visualization showing all trajectories together
+        if len(attackers) > 1:
+            print(f"Creating combined visualization with all {len(attackers)} trajectories...")
+            fig, ax = plt.subplots(1, 1, figsize=(12, 10))
+            sector_env.visualize(ax=ax, show=False, show_sectors=True)
+            
+            # Plot all trajectories
+            for i, attacker in enumerate(attackers):
+                traj_arr = np.array(attacker.trajectory)
+                ax.plot(traj_arr[:, 0], traj_arr[:, 1], '-', linewidth=1.5, alpha=0.7, label=f'Traj {i}')
+                ax.plot(traj_arr[0, 0], traj_arr[0, 1], 'go', markersize=8, alpha=0.6)
+                ax.plot(traj_arr[-1, 0], traj_arr[-1, 1], 'rx', markersize=10, alpha=0.6)
+            
+            ax.set_title(f'All {len(attackers)} Trajectories - With Detectors')
+            # Only show legend if not too many trajectories
+            if len(attackers) <= 20:
+                ax.legend(loc='upper right', fontsize=8, ncol=2)
+            
+            # Save combined plot
+            combined_plot_filename = f"all_trajectories_{'include' if include_observable else 'exclude'}_observable.png"
+            combined_plot_path = plots_dir_detectors / combined_plot_filename
+            plt.savefig(combined_plot_path, dpi=150, bbox_inches='tight')
+            plt.close('all')
+            print(f"   Saved combined plot to {combined_plot_filename}")
+        
         # Calculate means across all trajectories
         mean_result = {'trajectory_id': 'MEAN'}
         
@@ -397,7 +575,9 @@ def run_single_trial(
     print(f"CSV files generated: {len(csv_files) + len(observable_modes)}")
     print(f"Baseline plots saved to: {plots_dir}")
     print(f"Detector plots saved to: {plots_dir_detectors}")
-    print(f"Total plots generated: {len(attackers) * len(observable_modes) * 2}")
+    individual_plots = len(attackers) * len(observable_modes) * 2
+    combined_plots = len(observable_modes) * 2 if len(attackers) > 1 else 0
+    print(f"Total plots generated: {individual_plots + combined_plots} ({individual_plots} individual + {combined_plots} combined)")
     
     return {
         'json_path': str(json_path),
@@ -420,7 +600,7 @@ if __name__ == "__main__":
     # Get the project root directory (parent of src/)
     project_root = Path(__file__).parent.parent
     
-    # Example trial
+    # Example trial with shape centroids waypoints (default)
     results = run_single_trial(
         json_path=project_root / "utils" / "basic_notreal.json",
         n_detectors=10,
@@ -428,10 +608,33 @@ if __name__ == "__main__":
         sliding_window_sizes=[5, 10, 15, 30, 60],
         optimization_method='greedy+refine',
         output_dir=project_root / "results" / "trial_example",
-        both_observable_modes=True
+        both_observable_modes=True,
+        waypoint_mode='grid_center',  # Options: 'shapes', 'grid_center', 'none'
+        trajectory_noise_std=40.0,  # Trajectory noise (meters) - used for both normal and swarm mode
+        use_swarm_position=True,  # Use swarm positioning
+        swarm_spread=250.0  # Spread radius (meters) when use_swarm_position=True
     )
     
     print(f"\n\nTrial metadata:")
     for key, value in results.items():
         if key != 'detector_positions':  # Skip printing all positions
             print(f"  {key}: {value}")
+    
+    # ========================================================================
+    # Configuration Examples:
+    # ========================================================================
+    
+    # Waypoint modes:
+    # waypoint_mode='shapes'       # Use shape centroids (default)
+    # waypoint_mode='grid_center'  # All drones fly to grid center first
+    # waypoint_mode='none'         # Straight line from start to target
+    
+    # Trajectory noise (all values in meters):
+    # trajectory_noise_std=20.0    # 20m standard deviation
+    #                              # ALWAYS applied during trajectory generation (not post-processing)
+    #                              # Ensures proper timing and distance calculations
+    
+    # Swarm positioning (treats attacker positions as swarm centers):
+    # use_swarm_position=True      # Enable swarm mode
+    # swarm_spread=50.0            # Individual attackers spread 50m around center
+    #                              # trajectory_noise_std applies to each swarm attacker

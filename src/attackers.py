@@ -48,6 +48,23 @@ class Attacker:
 
         self.trajectory = self.generate_trajectory()
 
+    @property
+    def position(self):
+        """
+        Return the start position of the attacker.
+        This property is needed for compatibility with environment visualization
+        which expects drones to have a .position attribute.
+        """
+        return self.start_position
+    
+    @position.setter
+    def position(self, value):
+        """
+        Set the start position of the attacker.
+        This setter is needed for compatibility with code that updates attacker positions.
+        """
+        self.start_position = value
+
     def generate_trajectory(self):
         """
         Generate a linear trajectory from start to target.
