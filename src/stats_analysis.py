@@ -51,7 +51,7 @@ class SweepAnalyzer:
         Extract statistics for a specific sliding window size.
         
         Args:
-            window_size: One of '5s', '10s', '15s', '30s', '60s'
+            window_size: One of '5s', '10s', '15s', '30s'
             
         Returns:
             DataFrame with min, max, mean for the specified window
@@ -73,8 +73,7 @@ class SweepAnalyzer:
             '5s': 'mean_sliding_window_5s_mean',
             '10s': 'mean_sliding_window_10s_mean',
             '15s': 'mean_sliding_window_15s_mean',
-            '30s': 'mean_sliding_window_30s_mean',
-            '60s': 'mean_sliding_window_60s_mean'
+            '30s': 'mean_sliding_window_30s_mean'
         }
         df = self.df[['n_detectors'] + list(window_cols.values())].copy()
         df.columns = ['n_detectors'] + list(window_cols.keys())
@@ -215,7 +214,7 @@ class TrajectoryAnalyzer:
         Get statistics for a specific sliding window across all trajectories.
         
         Args:
-            window_size: One of '5s', '10s', '15s', '30s', '60s'
+            window_size: One of '5s', '10s', '15s', '30s'
             
         Returns:
             Dictionary with mean, std, min, max of the window metric
@@ -244,8 +243,7 @@ class TrajectoryAnalyzer:
             '5s': 'sliding_window_5s_mean',
             '10s': 'sliding_window_10s_mean',
             '15s': 'sliding_window_15s_mean',
-            '30s': 'sliding_window_30s_mean',
-            '60s': 'sliding_window_60s_mean'
+            '30s': 'sliding_window_30s_mean'
         }
         df = self.df[['trajectory_id'] + list(window_cols.values())].copy()
         df.columns = ['trajectory_id'] + list(window_cols.keys())
