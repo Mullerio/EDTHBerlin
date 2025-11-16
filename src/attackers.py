@@ -316,6 +316,9 @@ class AttackerSwarm:
     - One or more `target_positions` can be provided; if there are multiple,
       they are distributed evenly between the attackers (round‑robin).
     - Alternatively, provide `target_distribution` to sample targets from a distribution.
+    - When only a single `target_position` is supplied and `spread > 0`, each attacker
+      samples an individual target from the same uniform distribution used for start
+      positions. Set `spread=0` to disable both start and target jitter.
     - Supports waypoints: single waypoint or ordered list of waypoints for all attackers
     """
 
@@ -351,6 +354,19 @@ class AttackerSwarm:
         else:
             self.waypoints = None
 
+    def _sample_uniform_offset(self, base_point):
+        """
+        Sample a point uniformly within [-spread, +spread] of `base_point` in
+        each dimension. If spread <= 0, returns the base point unchanged.
+        """
+        if self.spread <= 0:
+            return tuple(base_point)
+
+        return tuple(
+            float(coord) + random.uniform(-self.spread, self.spread)
+            for coord in base_point
+        )
+
     def _sample_start_around_center(self):
         """
         Sample a new start position around `self.start_position`.
@@ -364,10 +380,7 @@ class AttackerSwarm:
             # No spread requested: all attackers start exactly at start_position.
             return self.start_position
 
-        return tuple(
-            coord + random.uniform(-self.spread, self.spread)
-            for coord in self.start_position
-        )
+        return self._sample_uniform_offset(self.start_position)
 
     def _target_for_index(self, idx: int):
         """
@@ -378,7 +391,10 @@ class AttackerSwarm:
         """
         if self.target_positions is None:
             return None
-        return self.target_positions[idx % len(self.target_positions)]
+        base_target = self.target_positions[idx % len(self.target_positions)]
+        if len(self.target_positions) == 1 and self.spread > 0:
+            return self._sample_uniform_offset(base_target)
+        return base_target
 
     def generate_swarm(self, steps: int, speed: float = 0.0, speed_noise: float = 0.0) -> List[Attacker]:
         """
