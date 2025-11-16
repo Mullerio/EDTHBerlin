@@ -80,27 +80,33 @@ class SweepAnalyzer:
         df.columns = ['n_detectors'] + list(window_cols.keys())
         return df.set_index('n_detectors')
     
-    def plot_detection_vs_detectors(self, figsize=(12, 5)):
-        """Plot detection probability vs number of detectors."""
+    def plot_detection_vs_detectors(self, figsize=(14, 5)):
+        """Plot detection rate and sliding windows vs number of detectors."""
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
         
-        # Cumulative detection probability
-        ax1.plot(self.df['n_detectors'], 
-                self.df['mean_cumulative_detection_prob'], 
-                'o-', linewidth=2, markersize=8, color='steelblue')
-        ax1.set_xlabel('Number of Detectors', fontsize=12)
-        ax1.set_ylabel('Mean Cumulative Detection Probability', fontsize=12)
-        ax1.set_title('Detection Probability vs Detector Count', fontsize=14, fontweight='bold')
-        ax1.grid(True, alpha=0.3)
-        ax1.set_ylim([0, 1.05])
-        
         # Detection per second
-        ax2.plot(self.df['n_detectors'], 
+        ax1.plot(self.df['n_detectors'], 
                 self.df['mean_avg_detection_per_second'], 
                 'o-', linewidth=2, markersize=8, color='coral')
+        ax1.set_xlabel('Number of Detectors', fontsize=12)
+        ax1.set_ylabel('Mean Detection Probability per Second', fontsize=12)
+        ax1.set_title('Detection Rate vs Detector Count', fontsize=14, fontweight='bold')
+        ax1.grid(True, alpha=0.3)
+        
+        # Sliding window means comparison
+        window_data = self.all_window_means()
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
+        markers = ['o', 's', '^', 'D', 'v']
+        
+        for i, col in enumerate(window_data.columns):
+            ax2.plot(window_data.index, window_data[col], 
+                   marker=markers[i], linewidth=2, markersize=7,
+                   label=col, color=colors[i])
+        
         ax2.set_xlabel('Number of Detectors', fontsize=12)
-        ax2.set_ylabel('Mean Detection Probability per Second', fontsize=12)
-        ax2.set_title('Detection Rate vs Detector Count', fontsize=14, fontweight='bold')
+        ax2.set_ylabel('Mean Detection Probability', fontsize=12)
+        ax2.set_title('Sliding Window Detection vs Detector Count', fontsize=14, fontweight='bold')
+        ax2.legend(loc='best', fontsize=9)
         ax2.grid(True, alpha=0.3)
         
         plt.tight_layout()
@@ -245,30 +251,34 @@ class TrajectoryAnalyzer:
         df.columns = ['trajectory_id'] + list(window_cols.keys())
         return df.set_index('trajectory_id')
     
-    def plot_trajectory_detection(self, figsize=(12, 5)):
-        """Plot detection metrics for each trajectory."""
+    def plot_trajectory_detection(self, figsize=(14, 5)):
+        """Plot detection rate and sliding windows for each trajectory."""
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
         
-        # Cumulative detection per trajectory
-        ax1.bar(self.df['trajectory_id'], 
-               self.df['cumulative_detection_prob'],
-               color='steelblue', alpha=0.7)
-        ax1.set_xlabel('Trajectory ID', fontsize=12)
-        ax1.set_ylabel('Cumulative Detection Probability', fontsize=12)
-        ax1.set_title(f'Detection per Trajectory ({self.n_detectors} detectors)', 
-                     fontsize=14, fontweight='bold')
-        ax1.grid(True, alpha=0.3, axis='y')
-        ax1.set_ylim([0, 1.05])
-        
         # Detection rate per trajectory
-        ax2.bar(self.df['trajectory_id'], 
+        ax1.bar(self.df['trajectory_id'], 
                self.df['avg_detection_per_second'],
                color='coral', alpha=0.7)
-        ax2.set_xlabel('Trajectory ID', fontsize=12)
-        ax2.set_ylabel('Detection Probability per Second', fontsize=12)
-        ax2.set_title(f'Detection Rate per Trajectory ({self.n_detectors} detectors)', 
+        ax1.set_xlabel('Trajectory ID', fontsize=12)
+        ax1.set_ylabel('Detection Probability per Second', fontsize=12)
+        ax1.set_title(f'Detection Rate per Trajectory ({self.n_detectors} detectors)', 
                      fontsize=14, fontweight='bold')
-        ax2.grid(True, alpha=0.3, axis='y')
+        ax1.grid(True, alpha=0.3, axis='y')
+        
+        # Sliding window means for each trajectory
+        window_data = self.all_window_means()
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
+        
+        for i, col in enumerate(window_data.columns):
+            ax2.plot(window_data.index, window_data[col], 
+                    linewidth=1.5, alpha=0.7, color=colors[i], label=col)
+        
+        ax2.set_xlabel('Trajectory ID', fontsize=12)
+        ax2.set_ylabel('Mean Detection Probability', fontsize=12)
+        ax2.set_title(f'Sliding Window Detection per Trajectory ({self.n_detectors} detectors)', 
+                     fontsize=14, fontweight='bold')
+        ax2.legend(loc='best', fontsize=9)
+        ax2.grid(True, alpha=0.3)
         
         plt.tight_layout()
         return fig, (ax1, ax2)
@@ -354,34 +364,33 @@ def compare_detector_counts(trajectory_csv_paths: List[str], figsize=(14, 6)):
         Figure and axes objects
     """
     analyzers = [TrajectoryAnalyzer(path) for path in trajectory_csv_paths]
-    
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
-    
-    # Box plot of cumulative detection
-    data_cumulative = [a.df['cumulative_detection_prob'] for a in analyzers]
     labels = [f"{a.n_detectors}" for a in analyzers]
     
-    bp1 = ax1.boxplot(data_cumulative, labels=labels, patch_artist=True)
-    for patch in bp1['boxes']:
-        patch.set_facecolor('steelblue')
-        patch.set_alpha(0.7)
-    ax1.set_xlabel('Number of Detectors', fontsize=12)
-    ax1.set_ylabel('Cumulative Detection Probability', fontsize=12)
-    ax1.set_title('Detection Probability Distribution by Detector Count', 
-                 fontsize=14, fontweight='bold')
-    ax1.grid(True, alpha=0.3, axis='y')
-    ax1.set_ylim([0, 1.05])
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
     
     # Box plot of detection per second
     data_rate = [a.df['avg_detection_per_second'] for a in analyzers]
     
-    bp2 = ax2.boxplot(data_rate, labels=labels, patch_artist=True)
-    for patch in bp2['boxes']:
+    bp1 = ax1.boxplot(data_rate, labels=labels, patch_artist=True)
+    for patch in bp1['boxes']:
         patch.set_facecolor('coral')
         patch.set_alpha(0.7)
+    ax1.set_xlabel('Number of Detectors', fontsize=12)
+    ax1.set_ylabel('Detection Probability per Second', fontsize=12)
+    ax1.set_title('Detection Rate Distribution by Detector Count', 
+                 fontsize=14, fontweight='bold')
+    ax1.grid(True, alpha=0.3, axis='y')
+    
+    # Box plot comparison for 30s sliding window
+    data_30s = [a.df['sliding_window_30s_mean'] for a in analyzers]
+    
+    bp2 = ax2.boxplot(data_30s, labels=labels, patch_artist=True)
+    for patch in bp2['boxes']:
+        patch.set_facecolor('steelblue')
+        patch.set_alpha(0.7)
     ax2.set_xlabel('Number of Detectors', fontsize=12)
-    ax2.set_ylabel('Detection Probability per Second', fontsize=12)
-    ax2.set_title('Detection Rate Distribution by Detector Count', 
+    ax2.set_ylabel('30s Window Detection Probability', fontsize=12)
+    ax2.set_title('30s Sliding Window Distribution by Detector Count', 
                  fontsize=14, fontweight='bold')
     ax2.grid(True, alpha=0.3, axis='y')
     
