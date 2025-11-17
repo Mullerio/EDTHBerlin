@@ -1,4 +1,4 @@
-## ETDH Hackathon Berlin, Top 15 of all Teams
+## EDTH Hackathon Berlin, Top 15 of all Teams
 
 Building Simulation Environment to test different detection methods for low flying attack drones that cannot be detected well by radar due to occlusion or radar simply being to expensive while also incorporating the time to intercept. 
 
