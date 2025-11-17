@@ -344,6 +344,7 @@ def run_single_trial(
                 analysis = sector_env.analyze_trajectory(
                     attacker.trajectory,
                     time_per_step=1.0,
+                    sliding_window_sizes=sliding_window_sizes,
                     only_nonobservable=True,
                     include_observable_in_stats=include_observable
                 )
@@ -513,6 +514,7 @@ def run_single_trial(
             analysis = sector_env.analyze_trajectory(
                 attacker.trajectory,
                 time_per_step=1.0,
+                sliding_window_sizes=sliding_window_sizes,
                 only_nonobservable=True,
                 include_observable_in_stats=include_observable
             )

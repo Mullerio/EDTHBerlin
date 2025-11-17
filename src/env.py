@@ -603,13 +603,14 @@ class SectorEnv(Environment):
 
         return results
     
-    def analyze_trajectory(self, trajectory, time_per_step=1.0, only_nonobservable=True, include_observable_in_stats=False):
+    def analyze_trajectory(self, trajectory, time_per_step=1.0, sliding_window_sizes=[5, 10, 15, 20, 30], only_nonobservable=True, include_observable_in_stats=False):
         """
         Analyze detection probability along an attacker trajectory.
         
         Args:
             trajectory: list of (x, y) waypoints
             time_per_step: time elapsed between consecutive waypoints (seconds)
+            sliding_window_sizes: list of window sizes (in seconds) for sliding window analysis
             only_nonobservable: if True, only calculate detection for non-observable region
                               (ignores observable regions where detection is automatic)
             include_observable_in_stats: if True, include observable regions in probability calculations
@@ -796,7 +797,7 @@ class SectorEnv(Environment):
         sliding_window_stats = self.compute_sliding_window_detection(
             trajectory, 
             time_per_step=time_per_step, 
-            window_sizes=[5, 10, 15, 20, 30],
+            window_sizes=sliding_window_sizes,
             only_nonobservable=only_nonobservable,
             include_observable_in_stats=include_observable_in_stats
         )
@@ -920,13 +921,14 @@ class SectorEnv(Environment):
         
         return ax
     
-    def visualize_trajectory_analysis(self, attacker, figsize=(12, 5), include_observable_in_stats=False):
+    def visualize_trajectory_analysis(self, attacker, figsize=(12, 5), sliding_window_sizes=[5, 10, 15, 20, 30], include_observable_in_stats=False):
         """
         Visualize trajectory with detection probability analysis.
         
         Args:
             attacker: Attacker object with .trajectory attribute
             figsize: tuple of (width, height) for figure size
+            sliding_window_sizes: list of window sizes (in seconds) for sliding window analysis
             include_observable_in_stats: if True, include observable regions in probability calculations
                                          (treats observable as 100% detection, includes in averages/intervals)
         
@@ -949,7 +951,7 @@ class SectorEnv(Environment):
             total_dist = np.linalg.norm(target - start)
             time_per_step = 1.0  # default fallback
         
-        analysis = self.analyze_trajectory(trajectory, time_per_step, only_nonobservable=True, include_observable_in_stats=include_observable_in_stats)
+        analysis = self.analyze_trajectory(trajectory, time_per_step, sliding_window_sizes=sliding_window_sizes, only_nonobservable=True, include_observable_in_stats=include_observable_in_stats)
         
         # Get sliding window stats for visualization
         sliding_stats = analysis['sliding_window_stats']['summary']
