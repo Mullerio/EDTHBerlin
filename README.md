@@ -17,7 +17,7 @@ uv run -m http.server 5001 -d ./frontend
 To generate scenarios and get more visualizations, you can use the gradio app with 
 
 ```
-uv run gradio vis.py
+uv run gradio src/vis.py
 ```
 
 ----
