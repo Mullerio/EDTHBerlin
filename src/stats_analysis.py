@@ -51,7 +51,8 @@ class SweepAnalyzer:
         Extract statistics for a specific sliding window size.
         
         Args:
-            window_size: One of '5s', '10s', '15s', '30s'
+            window_size: Window size string (e.g., '5s', '10s', '15s', '30s')
+                        Must match an available sliding window in the data
             
         Returns:
             DataFrame with min, max, mean for the specified window
@@ -62,19 +63,41 @@ class SweepAnalyzer:
                 f'mean_sliding_window_{window_size}_mean']
         return self.df[cols].set_index('n_detectors')
     
+    def get_available_windows(self) -> List[str]:
+        """
+        Get list of available sliding window sizes in the data.
+        
+        Returns:
+            List of window size strings (e.g., ['5s', '10s', '15s', '30s'])
+        """
+        window_sizes = []
+        for col in self.df.columns:
+            if col.startswith('mean_sliding_window_') and col.endswith('_mean'):
+                window_size = col.replace('mean_sliding_window_', '').replace('_mean', '')
+                window_sizes.append(window_size)
+        # Sort by numeric value
+        return sorted(window_sizes, key=lambda x: int(x.replace('s', '')))
+    
     def all_window_means(self) -> pd.DataFrame:
         """
         Get mean detection probability for all time windows.
+        Automatically detects available sliding window columns in the data.
         
         Returns:
             DataFrame with n_detectors as index and window sizes as columns
         """
-        window_cols = {
-            '5s': 'mean_sliding_window_5s_mean',
-            '10s': 'mean_sliding_window_10s_mean',
-            '15s': 'mean_sliding_window_15s_mean',
-            '30s': 'mean_sliding_window_30s_mean'
-        }
+        # Dynamically detect all sliding window mean columns
+        window_cols = {}
+        for col in self.df.columns:
+            if col.startswith('mean_sliding_window_') and col.endswith('_mean'):
+                # Extract window size (e.g., '5s' from 'mean_sliding_window_5s_mean')
+                window_size = col.replace('mean_sliding_window_', '').replace('_mean', '')
+                window_cols[window_size] = col
+        
+        # Sort by numeric value for consistent ordering
+        sorted_windows = sorted(window_cols.items(), key=lambda x: int(x[0].replace('s', '')))
+        window_cols = dict(sorted_windows)
+        
         df = self.df[['n_detectors'] + list(window_cols.values())].copy()
         df.columns = ['n_detectors'] + list(window_cols.keys())
         return df.set_index('n_detectors')
@@ -214,7 +237,8 @@ class TrajectoryAnalyzer:
         Get statistics for a specific sliding window across all trajectories.
         
         Args:
-            window_size: One of '5s', '10s', '15s', '30s'
+            window_size: Window size string (e.g., '5s', '10s', '15s', '30s')
+                        Must match an available sliding window in the data
             
         Returns:
             Dictionary with mean, std, min, max of the window metric
@@ -232,19 +256,45 @@ class TrajectoryAnalyzer:
             'mean_of_maxs': self.df[col_max].mean()
         }
     
+    def get_available_windows(self) -> List[str]:
+        """
+        Get list of available sliding window sizes in the data.
+        
+        Returns:
+            List of window size strings (e.g., ['5s', '10s', '15s', '30s'])
+        """
+        window_sizes = []
+        for col in self.df.columns:
+            if col.startswith('sliding_window_') and col.endswith('_mean') and 'mean_sliding' not in col:
+                window_size = col.replace('sliding_window_', '').replace('_mean', '')
+                # Skip if this column is all NaN
+                if not self.df[col].isna().all():
+                    window_sizes.append(window_size)
+        # Sort by numeric value
+        return sorted(window_sizes, key=lambda x: int(x.replace('s', '')))
+    
     def all_window_means(self) -> pd.DataFrame:
         """
         Get mean detection for all windows across all trajectories.
+        Automatically detects available sliding window columns in the data.
         
         Returns:
             DataFrame with trajectory_id as index and window sizes as columns
         """
-        window_cols = {
-            '5s': 'sliding_window_5s_mean',
-            '10s': 'sliding_window_10s_mean',
-            '15s': 'sliding_window_15s_mean',
-            '30s': 'sliding_window_30s_mean'
-        }
+        # Dynamically detect all sliding window mean columns
+        window_cols = {}
+        for col in self.df.columns:
+            if col.startswith('sliding_window_') and col.endswith('_mean') and 'mean_sliding' not in col:
+                # Extract window size (e.g., '5s' from 'sliding_window_5s_mean')
+                window_size = col.replace('sliding_window_', '').replace('_mean', '')
+                # Skip if this column is all NaN
+                if not self.df[col].isna().all():
+                    window_cols[window_size] = col
+        
+        # Sort by numeric value for consistent ordering
+        sorted_windows = sorted(window_cols.items(), key=lambda x: int(x[0].replace('s', '')))
+        window_cols = dict(sorted_windows)
+        
         df = self.df[['trajectory_id'] + list(window_cols.values())].copy()
         df.columns = ['trajectory_id'] + list(window_cols.keys())
         return df.set_index('trajectory_id')
@@ -284,9 +334,14 @@ class TrajectoryAnalyzer:
     def plot_sliding_windows_distribution(self, figsize=(14, 8)):
         """Plot distribution of sliding window means across trajectories."""
         window_data = self.all_window_means()
+        n_windows = len(window_data.columns)
         
-        fig, axes = plt.subplots(2, 3, figsize=figsize)
-        axes = axes.flatten()
+        # Calculate grid size dynamically
+        n_cols = 3
+        n_rows = (n_windows + n_cols - 1) // n_cols  # Ceiling division
+        
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
+        axes = axes.flatten() if n_windows > 1 else [axes]
         
         for i, col in enumerate(window_data.columns):
             ax = axes[i]
@@ -304,8 +359,9 @@ class TrajectoryAnalyzer:
                       label=f'Mean: {mean_val:.3f}')
             ax.legend(fontsize=9)
         
-        # Remove extra subplot
-        fig.delaxes(axes[5])
+        # Remove extra subplots if any
+        for i in range(n_windows, len(axes)):
+            fig.delaxes(axes[i])
         
         plt.suptitle(f'Sliding Window Detection Distributions ({self.n_detectors} detectors)', 
                     fontsize=16, fontweight='bold', y=1.00)
@@ -353,6 +409,7 @@ class TrajectoryAnalyzer:
 def compare_detector_counts(trajectory_csv_paths: List[str], figsize=(14, 6)):
     """
     Compare detection statistics across different detector counts.
+    Automatically selects the largest available sliding window for comparison.
     
     Args:
         trajectory_csv_paths: List of paths to trajectory CSV files
@@ -379,16 +436,21 @@ def compare_detector_counts(trajectory_csv_paths: List[str], figsize=(14, 6)):
                  fontsize=14, fontweight='bold')
     ax1.grid(True, alpha=0.3, axis='y')
     
-    # Box plot comparison for 30s sliding window
-    data_30s = [a.df['sliding_window_30s_mean'] for a in analyzers]
+    # Box plot comparison for largest available sliding window
+    # Find the largest window size available in the data
+    window_data = analyzers[0].all_window_means()
+    largest_window = list(window_data.columns)[-1]  # Last column is largest (sorted)
+    window_col = f'sliding_window_{largest_window}_mean'
     
-    bp2 = ax2.boxplot(data_30s, labels=labels, patch_artist=True)
+    data_window = [a.df[window_col] for a in analyzers]
+    
+    bp2 = ax2.boxplot(data_window, labels=labels, patch_artist=True)
     for patch in bp2['boxes']:
         patch.set_facecolor('steelblue')
         patch.set_alpha(0.7)
     ax2.set_xlabel('Number of Detectors', fontsize=12)
-    ax2.set_ylabel('30s Window Detection Probability', fontsize=12)
-    ax2.set_title('30s Sliding Window Distribution by Detector Count', 
+    ax2.set_ylabel(f'{largest_window} Window Detection Probability', fontsize=12)
+    ax2.set_title(f'{largest_window} Sliding Window Distribution by Detector Count', 
                  fontsize=14, fontweight='bold')
     ax2.grid(True, alpha=0.3, axis='y')
     

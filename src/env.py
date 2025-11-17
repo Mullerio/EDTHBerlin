@@ -796,7 +796,7 @@ class SectorEnv(Environment):
         sliding_window_stats = self.compute_sliding_window_detection(
             trajectory, 
             time_per_step=time_per_step, 
-            window_sizes=[5, 10, 15, 30, 60],
+            window_sizes=[5, 10, 15, 20, 30],
             only_nonobservable=only_nonobservable,
             include_observable_in_stats=include_observable_in_stats
         )
