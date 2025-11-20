@@ -1,12 +1,14 @@
 """Quick test to verify zig-zag is visible in trial_runner output"""
 from pathlib import Path
 import sys
-sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
-from src.trial_runner import run_single_trial
+project_root = Path(__file__).resolve().parents[1]
+
+# Ensure `src`  on PYTHONPATH
+sys.path.insert(0, str(project_root / "src"))
+
+from trial_runner import run_single_trial
 from configs import detector_configs
-
-project_root = Path(__file__).parent
 
 print("="*70)
 print("RUNNING SINGLE TRIAL WITH ZIG-ZAG ENABLED")
@@ -34,4 +36,3 @@ print("\n" + "="*70)
 print("TEST COMPLETE")
 print("="*70)
 print(f"Check plots in: {results['plots_detectors_dir']}")
-print("Look for obvious zig-zag pattern in the trajectory plots!")

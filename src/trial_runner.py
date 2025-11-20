@@ -249,7 +249,7 @@ def run_single_trial(
                 # Ensure generated attackers inherit visible zig-zag defaults
                 # CRITICAL: Must regenerate trajectories AFTER setting parameters
                 if use_dynamic_trajectory and default_zigzag_amplitude is not None:
-                    print(f"   Applying zig-zag params: amp={default_zigzag_amplitude:.1f}m, freq={default_zigzag_frequency}, steps={default_dynamic_steps}")
+                    #print(f"   Applying zig-zag params: amp={default_zigzag_amplitude:.1f}m, freq={default_zigzag_frequency}, steps={default_dynamic_steps}")
                     for a in swarm_attackers:
                         a.zigzag_amplitude = default_zigzag_amplitude
                         a.zigzag_frequency = default_zigzag_frequency
@@ -936,15 +936,30 @@ if __name__ == "__main__":
     # minimal_mode=True            # No plots, only non-observable analysis
     
     # ========================================================================
-    # Detector Sweep Example:
+    # Detector Sweep Example with Dynamic Zig-Zag Trajectories + Noise:
     # ========================================================================
     
-    # The previous example automatically ran a large detector sweep which is
-    # computationally heavy (many trials, many swarm members, many samples).
-    # To avoid unexpectedly long runs when executing this module, we no longer
-    # run the sweep automatically. If you want to run the sweep, call
-    # `run_detector_sweep(...)` from a dedicated script or reduce the size
-    # of the sweep (fewer detector counts, smaller swarm sizes, or
-    # use_dynamic_trajectory=False).
-    print("No auto-run configured. To run a trial or sweep, call run_single_trial() or run_detector_sweep() manually.")
-    print("Example: run_single_trial(json_path=project_root / 'utils' / 'presentation.json', n_detectors=10, use_dynamic_trajectory=True, save_plots=True)")
+    # Run a detector sweep with dynamic zig-zag trajectories and noise
+    # This demonstrates realistic attack patterns with lateral evasion maneuvers
+    print("\n" + "="*70)
+    print("RUNNING DETECTOR SWEEP WITH DYNAMIC ZIG-ZAG TRAJECTORIES + NOISE")
+    print("="*70)
+    
+    sweep_results = run_detector_sweep(
+        json_path=project_root / "utils" / "presentation.json",
+        detector_counts=[5, 10, 15, 20, 25],  # Test these detector counts
+        detector_type=detector_configs.DetectorType.VISUAL,
+        sliding_window_sizes=[5, 10, 15, 20, 30],
+        optimization_method='greedy+refine',
+        output_dir=project_root / "results" / "sweep_zigzag_with_noise",
+        waypoint_mode='grid_center',
+        trajectory_noise_std=60.0,  # Add 60m Gaussian noise to trajectories
+        use_swarm_position=True,
+        swarm_spread=700.0,
+        attackers_per_swarm=10,
+        save_plots=True,  # Save plots to visualize zig-zag + noise trajectories
+        use_dynamic_trajectory=True,  # ENABLE zig-zag trajectories
+        trajectory_aggressiveness=2.0
+    )
+     
+    print(f"\n\nSweep results saved to: {sweep_results['sweep_csv_path']}")
