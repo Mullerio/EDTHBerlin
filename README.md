@@ -22,6 +22,10 @@ uv run gradio src/vis.py
 
 ----
 
+### Example Trajectory for a fixed amount of detectors with equal detection distribution.
+
+![alt text](results/plots_with_detectors/trajectory_13_exclude_observable.png)
+
 # Further work 
 
 Currently only supporting detection, integrate the interceptors. 

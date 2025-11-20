@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 import numpy as np
 from typing import List, Sequence, Tuple
+from scipy.integrate import solve_ivp
 
 
 
@@ -17,7 +18,7 @@ class Attacker:
     - Multiple waypoints: start -> waypoint1 -> waypoint2 -> ... -> target
     """
 
-    def __init__(self, start_position:tuple, target_position: tuple = None, steps: int = 10, target_distribution = None, noise_std: float = 0.0, speed : float = 0.0, speed_noise: float = 0.0, waypoint: tuple = None, waypoints: list = None):
+    def __init__(self, start_position:tuple, target_position: tuple = None, steps: int = 10, target_distribution = None, noise_std: float = 0.0, speed : float = 0.0, speed_noise: float = 0.0, waypoint: tuple = None, waypoints: list = None, use_dynamic_trajectory: bool = False, trajectory_aggressiveness: float = 2.0):
         self.start_position = start_position
 
         # Sample target from distribution if not provided
@@ -45,6 +46,10 @@ class Attacker:
             self.waypoints = [waypoint]
         else:
             self.waypoints = None
+        
+        # Dynamic trajectory settings (ODE/SDE-based)
+        self.use_dynamic_trajectory = use_dynamic_trajectory
+        self.trajectory_aggressiveness = trajectory_aggressiveness
 
         self.trajectory = self.generate_trajectory()
 
@@ -67,7 +72,10 @@ class Attacker:
 
     def generate_trajectory(self):
         """
-        Generate a linear trajectory from start to target.
+        Generate a trajectory from start to target.
+        
+        If use_dynamic_trajectory=True, uses an ODE/SDE-based system with attraction
+        to target and smooth dynamics. Otherwise uses linear interpolation.
         
         If waypoints are specified, generates a multi-segment path:
         - Single waypoint: start -> waypoint -> target
@@ -82,6 +90,10 @@ class Attacker:
         If `self.speed` <= 0, fall back to the legacy behavior of producing
         `self.steps` evenly spaced waypoints along the line.
         """
+        # If using dynamic trajectory, use ODE/SDE-based generation
+        if self.use_dynamic_trajectory:
+            return self._generate_dynamic_trajectory()
+        
         # If waypoints are specified, generate trajectory with waypoints
         if self.waypoints is not None and len(self.waypoints) > 0:
             return self._generate_trajectory_with_waypoints()
@@ -168,6 +180,290 @@ class Attacker:
             trajectory.append(tuple(pos.tolist()))
 
         return trajectory
+
+    def _generate_dynamic_trajectory(self):
+        """
+        Generate a trajectory using an ODE/SDE-based system.
+        
+        Supports waypoints: if waypoints are specified, generates dynamic trajectories
+        through each segment (start -> wp1 -> wp2 -> ... -> target).
+        
+        The trajectory is governed by a second-order system with:
+        - Attraction force towards the target (proportional to distance)
+        - Velocity damping for smooth motion
+        - Optional stochastic perturbations (Brownian motion)
+        
+        This creates more realistic, smooth attack patterns with acceleration/deceleration
+        rather than constant-velocity linear motion.
+        
+        The system is described by:
+            d²x/dt² = -γ(dx/dt) + α(x_target - x) + σξ(t)
+        where:
+            γ = damping coefficient (prevents oscillation)
+            α = attraction strength (aggressiveness parameter)
+            σ = noise intensity (from self.noise_std)
+            ξ(t) = white noise process
+        """
+        # If waypoints specified, generate multi-segment dynamic trajectory
+        if self.waypoints is not None and len(self.waypoints) > 0:
+            return self._generate_dynamic_trajectory_with_waypoints()
+        
+        # Single segment: start -> target
+        start = np.asarray(self.start_position, dtype=float)
+        target = np.asarray(self.target_position, dtype=float)
+        
+        # Calculate distance for time normalization
+        dist = np.linalg.norm(target - start)
+        
+        if dist == 0.0:
+            return [tuple(start.tolist())]
+        
+        # Parameters for the dynamical system
+        # Damping coefficient (prevents oscillation, ensures smooth approach)
+        damping = 1.5
+        
+        # Attraction strength (aggressiveness)
+        alpha = self.trajectory_aggressiveness
+        
+        # Estimate time to reach target (used for integration duration)
+        if self.speed is not None and self.speed > 0.0:
+            # Time based on average speed
+            estimated_time = dist / self.speed * 1.5  # Add 50% buffer for curved path
+        else:
+            # Fallback: estimate based on steps
+            estimated_time = self.steps
+        
+        # Define the ODE system: state = [x, y, vx, vy]
+        def dynamics(t, state):
+            x, y, vx, vy = state
+            pos = np.array([x, y])
+            vel = np.array([vx, vy])
+            
+            # Force towards target
+            direction = target - pos
+            force = alpha * direction
+            
+            # Damping force
+            damping_force = -damping * vel
+            
+            # Total acceleration
+            acc = force + damping_force
+            
+            # Return derivatives: [dx/dt, dy/dt, dvx/dt, dvy/dt]
+            return [vx, vy, acc[0], acc[1]]
+        
+        # Initial conditions: position at start, zero velocity
+        y0 = [start[0], start[1], 0.0, 0.0]
+        
+        # Time span for integration
+        t_span = (0, estimated_time)
+        
+        # Solve ODE
+        # Use dense_output for smooth interpolation at any time
+        sol = solve_ivp(
+            dynamics, 
+            t_span, 
+            y0, 
+            method='RK45',  # Runge-Kutta 4/5 method
+            dense_output=True,
+            max_step=1.0,  # Maximum step size of 1 second
+        )
+        
+        # Sample trajectory at 1-second intervals
+        if self.speed is not None and self.speed > 0.0:
+            # Sample at 1-second intervals
+            t_samples = np.arange(0, estimated_time, 1.0)
+            # Always include final time
+            if t_samples[-1] < estimated_time:
+                t_samples = np.append(t_samples, estimated_time)
+        else:
+            # Use specified number of steps
+            t_samples = np.linspace(0, estimated_time, self.steps)
+        
+        # Evaluate solution at sample times
+        trajectory_states = sol.sol(t_samples)
+        
+        # Extract positions (first 2 components of state)
+        trajectory = []
+        for i in range(len(t_samples)):
+            pos = trajectory_states[:2, i]
+            
+            # Add stochastic noise if requested (SDE component)
+            if self.noise_std > 0.0 and i > 0 and i < len(t_samples) - 1:
+                noise = np.random.normal(loc=0.0, scale=self.noise_std, size=2)
+                pos = pos + noise
+            
+            trajectory.append(tuple(pos.tolist()))
+        
+        # Ensure trajectory starts at exact start position
+        trajectory[0] = tuple(start.tolist())
+        
+        # Ensure trajectory ends at exact target position
+        trajectory[-1] = tuple(target.tolist())
+        
+        return trajectory
+
+    def _generate_dynamic_trajectory_with_waypoints(self):
+        """
+        Generate a multi-segment dynamic trajectory through all waypoints using ODE/SDE.
+        
+        Path: start -> waypoint1 -> waypoint2 -> ... -> target
+        
+        Each segment uses the ODE/SDE system with:
+        - Current segment endpoint as temporary target
+        - Initial velocity from previous segment for continuity
+        - Same aggressiveness and noise parameters
+        """
+        # Build the complete path: start -> waypoints -> target
+        path_points = [np.asarray(self.start_position, dtype=float)]
+        
+        # Add all waypoints
+        for wp in self.waypoints:
+            path_points.append(np.asarray(wp, dtype=float))
+        
+        # Add final target
+        path_points.append(np.asarray(self.target_position, dtype=float))
+        
+        # Generate dynamic trajectory through all segments
+        combined_trajectory = []
+        current_velocity = np.array([0.0, 0.0])  # Start with zero velocity
+        
+        for segment_idx in range(len(path_points) - 1):
+            segment_start = path_points[segment_idx]
+            segment_end = path_points[segment_idx + 1]
+            
+            # Generate dynamic segment with velocity continuity
+            segment_traj, final_velocity = self._generate_dynamic_segment(
+                segment_start, 
+                segment_end, 
+                initial_velocity=current_velocity,
+                include_endpoint=True
+            )
+            
+            # Add segment to combined trajectory
+            if segment_idx == 0:
+                # First segment: include all points
+                combined_trajectory.extend(segment_traj)
+            else:
+                # Later segments: skip first point (already included from previous segment)
+                combined_trajectory.extend(segment_traj[1:])
+            
+            # Update velocity for next segment
+            current_velocity = final_velocity
+        
+        return combined_trajectory
+
+    def _generate_dynamic_segment(self, start_pos, end_pos, initial_velocity=None, include_endpoint=True):
+        """
+        Generate a single dynamic trajectory segment using ODE/SDE system.
+        
+        Args:
+            start_pos: Starting position as numpy array
+            end_pos: Ending position as numpy array
+            initial_velocity: Initial velocity for continuity (None = zero velocity)
+            include_endpoint: Whether to include the exact endpoint
+            
+        Returns:
+            tuple: (trajectory_points, final_velocity)
+                - trajectory_points: List of (x, y) tuples
+                - final_velocity: Final velocity as numpy array for next segment
+        """
+        start = np.asarray(start_pos, dtype=float)
+        target = np.asarray(end_pos, dtype=float)
+        
+        # Calculate distance
+        dist = np.linalg.norm(target - start)
+        
+        if dist == 0.0:
+            return [tuple(start.tolist())], np.array([0.0, 0.0])
+        
+        # Initial velocity (for continuity between segments)
+        if initial_velocity is None:
+            initial_velocity = np.array([0.0, 0.0])
+        
+        # Parameters for the dynamical system
+        damping = 1.5
+        alpha = self.trajectory_aggressiveness
+        
+        # Estimate time to reach target
+        if self.speed is not None and self.speed > 0.0:
+            estimated_time = dist / self.speed * 1.5
+        else:
+            # For multi-segment, divide steps proportionally
+            estimated_time = self.steps * 0.5  # Conservative estimate per segment
+        
+        # Define the ODE system: state = [x, y, vx, vy]
+        def dynamics(t, state):
+            x, y, vx, vy = state
+            pos = np.array([x, y])
+            vel = np.array([vx, vy])
+            
+            # Force towards segment target
+            direction = target - pos
+            force = alpha * direction
+            
+            # Damping force
+            damping_force = -damping * vel
+            
+            # Total acceleration
+            acc = force + damping_force
+            
+            return [vx, vy, acc[0], acc[1]]
+        
+        # Initial conditions: position at start, velocity from previous segment
+        y0 = [start[0], start[1], initial_velocity[0], initial_velocity[1]]
+        
+        # Time span for integration
+        t_span = (0, estimated_time)
+        
+        # Solve ODE
+        sol = solve_ivp(
+            dynamics, 
+            t_span, 
+            y0, 
+            method='RK45',
+            dense_output=True,
+            max_step=1.0,
+        )
+        
+        # Sample trajectory
+        if self.speed is not None and self.speed > 0.0:
+            t_samples = np.arange(0, estimated_time, 1.0)
+            if t_samples[-1] < estimated_time:
+                t_samples = np.append(t_samples, estimated_time)
+        else:
+            t_samples = np.linspace(0, estimated_time, max(10, self.steps // 3))
+        
+        # Evaluate solution
+        trajectory_states = sol.sol(t_samples)
+        
+        # Extract positions and velocities
+        trajectory = []
+        final_vel = np.array([0.0, 0.0])
+        
+        for i in range(len(t_samples)):
+            pos = trajectory_states[:2, i]
+            vel = trajectory_states[2:4, i]
+            
+            # Add stochastic noise if requested
+            if self.noise_std > 0.0 and i > 0 and i < len(t_samples) - 1:
+                noise = np.random.normal(loc=0.0, scale=self.noise_std, size=2)
+                pos = pos + noise
+            
+            trajectory.append(tuple(pos.tolist()))
+            
+            # Store final velocity
+            if i == len(t_samples) - 1:
+                final_vel = vel.copy()
+        
+        # Ensure segment starts at exact start position
+        trajectory[0] = tuple(start.tolist())
+        
+        # Ensure segment ends at exact endpoint if requested
+        if include_endpoint:
+            trajectory[-1] = tuple(target.tolist())
+        
+        return trajectory, final_vel
 
     def _generate_trajectory_with_waypoints(self):
         """
@@ -332,6 +628,8 @@ class AttackerSwarm:
         noise_std: float = 0.0,
         waypoint = None,
         waypoints = None,
+        use_dynamic_trajectory: bool = False,
+        trajectory_aggressiveness: float = 2.0,
     ):
         if number_of_attackers < 1:
             raise ValueError("number_of_attackers must be at least 1")
@@ -353,6 +651,10 @@ class AttackerSwarm:
             self.waypoints = [waypoint]
         else:
             self.waypoints = None
+        
+        # Dynamic trajectory settings
+        self.use_dynamic_trajectory = use_dynamic_trajectory
+        self.trajectory_aggressiveness = trajectory_aggressiveness
 
     def _sample_uniform_offset(self, base_point):
         """
@@ -405,6 +707,7 @@ class AttackerSwarm:
         - Is assigned a target chosen from `target_positions` (round-robin), or 
           sampled from `target_distribution` if provided.
         - Optionally flies through waypoint(s) if specified.
+        - Uses dynamic trajectory (ODE/SDE-based) if use_dynamic_trajectory=True.
         """
         swarm: List[Attacker] = []
 
@@ -420,6 +723,8 @@ class AttackerSwarm:
                 speed=speed,
                 speed_noise=speed_noise,
                 waypoints=self.waypoints,
+                use_dynamic_trajectory=self.use_dynamic_trajectory,
+                trajectory_aggressiveness=self.trajectory_aggressiveness,
             ))
 
         return swarm

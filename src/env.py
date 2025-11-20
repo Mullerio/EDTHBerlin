@@ -338,7 +338,7 @@ class SectorEnv(Environment):
     """
     
     def __init__(self, width, height, target: TargetDistribution = None, 
-                 default_observable=True, cell_size=1.0, attackers=None):
+                 default_observable=True, cell_size=1.0, attackers=None, color_scheme='green_red'):
         """
         Initialize sector environment.
         
@@ -351,14 +351,49 @@ class SectorEnv(Environment):
                                if False, entire grid starts as non-observable (then mark subgrids as observable)
             cell_size: physical size of each grid cell in meters (default 1.0)
             attackers: optional list of Attacker objects to add at initialization
+            color_scheme: 'green_red' (default) or 'yellow_blue' for visualization colors
         """
         super().__init__(width, height, target, cell_size=cell_size, attackers=attackers)
+        self.color_scheme = color_scheme
         
         # Override observable mask based on default
         if default_observable:
             self.observable_mask = np.ones((self.height, self.width), dtype=bool)
         else:
             self.observable_mask = np.zeros((self.height, self.width), dtype=bool)
+    
+    def _get_color_config(self):
+        """
+        Get color configuration based on current color scheme.
+        
+        Returns:
+            dict with keys: observable_color, non_observable_color, 
+                          observable_rgba, non_observable_rgba,
+                          detector_color, detector_fill, detector_edge,
+                          attacker_color
+        """
+        if self.color_scheme == 'yellow_blue':
+            return {
+                'observable_color': 'yellow',
+                'non_observable_color': 'lightblue',
+                'observable_rgba': [1.0, 1.0, 0.0, 0.5],
+                'non_observable_rgba': [0.5, 0.7, 1.0, 0.5],
+                'detector_color': 'gold',
+                'detector_fill': 'yellow',
+                'detector_edge': 'orange',
+                'attacker_color': [1.0, 0.2, 0.2]  # Bright red
+            }
+        else:  # default: green_red
+            return {
+                'observable_color': [0.0, 0.35, 0.0],  # Dark green background (darker than before)
+                'non_observable_color': [0.5, 0.0, 0.0],  # Dark red/maroon (like first image)
+                'observable_rgba': [0.0, 0.4, 0.0, 0.5],  # Dark green with transparency
+                'non_observable_rgba': [0.5, 0.0, 0.0, 0.5],  # Dark maroon red
+                'detector_color': [0.2, 0.4, 0.8],  # Blue for detector dots (like first image)
+                'detector_fill': [0.4, 0.6, 1.0],  # Light blue fill (like first image)
+                'detector_edge': [0.0, 0.0, 0.6],  # Dark blue edge
+                'attacker_color': [1.0, 0.2, 0.2]  # Bright red for attacker dots
+            }
     
     def set_rectangular_sector(self, x0, y0, w, h, observable):
         """
@@ -845,34 +880,114 @@ class SectorEnv(Environment):
         
         All coordinates shown are in physical units (meters).
         """
-        # Call parent visualization
-        ax = super().visualize(figsize=figsize, ax=ax, show=False)
+        # Get color configuration
+        colors = self._get_color_config()
+        
+        # Manually create visualization (override parent to use correct colors)
+        prob = self.prob_map
+        
+        created_fig = False
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+            created_fig = True
         
         physical_width = self.width * self.cell_size
         physical_height = self.height * self.cell_size
         
+        # Show heatmap
+        im = ax.imshow(prob, origin='lower', extent=(0, physical_width, 0, physical_height), cmap='hot', aspect='auto')
+        
+        # Plot drones with configured colors
+        def _plot_list(drone_list, color, label):
+            if len(drone_list) == 0:
+                return
+            positions = []
+            for d in drone_list:
+                pos = d.position
+                if isinstance(pos, (list, tuple)) and len(pos) == 2:
+                    positions.append(pos)
+                elif isinstance(pos, np.ndarray) and pos.size == 2:
+                    positions.append(pos.flatten()[:2])
+            if len(positions) == 0:
+                return
+            pts = np.array(positions).reshape(-1, 2)
+            ax.scatter(pts[:, 0], pts[:, 1], c=color, label=label, edgecolors='k')
+        
+        _plot_list(self.atk_drones, colors['attacker_color'], 'attack')
+        _plot_list(self.def_drones, 'green', 'defend')
+        _plot_list(self.detectors, colors['detector_color'], 'detect')
+        
+        # Overlay detector probability distributions
+        for det in self.detectors:
+            try:
+                cx, cy = det.position
+            except Exception:
+                continue
+            
+            r = getattr(det, 'radius', None)
+            gx = self.grid[:, 0]
+            gy = self.grid[:, 1]
+            pts = np.stack([gx, gy], axis=1)
+            dists_flat = np.sqrt((gx - cx) ** 2 + (gy - cy) ** 2)
+            
+            probs_flat = None
+            try:
+                probs_flat = det.probability(pts)
+                probs_flat = np.asarray(probs_flat, dtype=float).reshape(-1)
+                if probs_flat.shape[0] != pts.shape[0]:
+                    raise ValueError('probability returned wrong shape')
+            except Exception:
+                try:
+                    probs_flat = det.probability(dists_flat)
+                    probs_flat = np.asarray(probs_flat, dtype=float).reshape(-1)
+                except Exception:
+                    continue
+            
+            alpha_flat = probs_flat.copy()
+            if r is not None:
+                alpha_flat[dists_flat > r] = 0.0
+            
+            cmap = plt.cm.Blues
+            colors_det = cmap(np.clip(probs_flat, 0.0, 1.0))
+            colors_det[:, 3] = colors_det[:, 3] * alpha_flat
+            rgba = colors_det.reshape(self.height, self.width, 4)
+            ax.imshow(rgba, origin='lower', extent=(0, physical_width, 0, physical_height), zorder=5)
+            
+            # Draw detector radius circle with configured colors
+            if r is not None:
+                circ = Circle((cx, cy), r, edgecolor=colors['detector_edge'], 
+                            facecolor=colors['detector_fill'], alpha=0.3, linewidth=2)
+                ax.add_patch(circ)
+        
+        ax.set_xlim(0, physical_width)
+        ax.set_ylim(0, physical_height)
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        
         if show_sectors:
-            # Create a mask overlay: yellow tint for observable, light blue tint for non-observable
+            # Create a mask overlay using configured colors
             sector_overlay = np.zeros((self.height, self.width, 4))
             
-            # Observable regions: yellow tint (much more visible)
-            sector_overlay[self.observable_mask, :] = [1.0, 1.0, 0.0, 0.5]
+            # Observable regions
+            sector_overlay[self.observable_mask, :] = colors['observable_rgba']
             
-            # Non-observable regions: light blue tint (much more visible)
-            sector_overlay[~self.observable_mask, :] = [0.5, 0.7, 1.0, 0.5]
+            # Non-observable regions
+            sector_overlay[~self.observable_mask, :] = colors['non_observable_rgba']
             
             ax.imshow(sector_overlay, origin='lower', extent=(0, physical_width, 0, physical_height), zorder=1)
             
             # Add legend entries for sectors
             from matplotlib.patches import Patch
             legend_elements = [
-                Patch(facecolor='yellow', alpha=0.3, label='Observable'),
-                Patch(facecolor='lightblue', alpha=0.3, label='Non-observable')
+                Patch(facecolor=colors['observable_color'], alpha=0.3, label='Observable'),
+                Patch(facecolor=colors['non_observable_color'], alpha=0.3, label='Non-observable')
             ]
             handles, labels = ax.get_legend_handles_labels()
             ax.legend(handles=handles + legend_elements, loc='upper right')
+        else:
+            ax.legend(loc='upper right')
         
-        if show:
+        if show and created_fig:
             plt.show()
         
         return ax

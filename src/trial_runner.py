@@ -51,6 +51,8 @@ def run_single_trial(
     use_swarm_position: bool = False,
     swarm_spread: float = 0.0,
     attackers_per_swarm: int = 4,
+    use_dynamic_trajectory: bool = False,
+    trajectory_aggressiveness: float = 2.0,
     minimal_mode: bool = False,
     save_plots: bool = True
 ) -> dict:
@@ -113,6 +115,17 @@ def run_single_trial(
         attackers_per_swarm=3, this will generate 12 total attackers (3 per position).
         Each attacker in a swarm will have different start positions (based on spread)
         and different trajectory noise. Ignored when use_swarm_position=False.
+    use_dynamic_trajectory : bool, default=False
+        If True, use ODE/SDE-based dynamic trajectory generation for realistic attack
+        patterns with smooth acceleration/deceleration. If False, use standard linear
+        interpolation. Dynamic trajectories support waypoints with velocity continuity.
+    trajectory_aggressiveness : float, default=2.0
+        Aggressiveness parameter for dynamic trajectories (only used if use_dynamic_trajectory=True).
+        Controls attraction strength to target/waypoints:
+        - 0.5-1.0: Gentle, stealth approach
+        - 1.5-2.5: Balanced, normal behavior
+        - 3.0-4.0: Aggressive, fast convergence
+        - 4.5-5.0+: Very aggressive, rapid convergence
     minimal_mode : bool, default=False
         If True, enables minimal mode: skips baseline analysis (always 0% without detectors)
         and forces non-observable analysis only (both_observable_modes=False).
@@ -134,52 +147,6 @@ def run_single_trial(
         - 'detector_positions': List of detector positions
         - 'detector_metrics': Metrics from detector optimization
         - 'csv_files': List of generated CSV file paths
-        
-    Output CSV Files
-    ----------------
-    The function generates the following CSV files in output_dir:
-    
-    1. baseline_exclude_observable.csv:
-       - Trajectory analysis WITHOUT detectors, excluding observable regions
-       
-    2. baseline_include_observable.csv (if both_observable_modes=True):
-       - Trajectory analysis WITHOUT detectors, including observable regions
-       
-    3. with_detectors_exclude_observable.csv:
-       - Trajectory analysis WITH detectors, excluding observable regions
-       
-    4. with_detectors_include_observable.csv (if both_observable_modes=True):
-       - Trajectory analysis WITH detectors, including observable regions
-    
-    Each CSV contains:
-    - trajectory_id: Index of the attacker/trajectory
-    - cumulative_detection_prob: Final cumulative detection probability
-    - avg_detection_per_second: Average instantaneous detection probability per second
-    - time_in_observable: Time spent in observable regions (seconds)
-    - time_in_nonobservable: Time spent in non-observable regions (seconds)
-    - sliding_window_{size}s_min: Minimum detection probability in {size}s windows
-    - sliding_window_{size}s_max: Maximum detection probability in {size}s windows
-    - sliding_window_{size}s_mean: Mean detection probability in {size}s windows
-    
-    Plus a summary row with 'trajectory_id'='MEAN' containing means across all trajectories.
-    
-    Example
-    -------
-    >>> from pathlib import Path
-    >>> from configs.detector_configs import DetectorType
-    >>> 
-    >>> results = run_single_trial(
-    ...     json_path="grid-150x150(3).json",
-    ...     n_detectors=20,
-    ...     detector_type=DetectorType.VISUAL,
-    ...     sliding_window_sizes=[5, 10, 15, 30, 60],
-    ...     optimization_method='greedy+refine',
-    ...     output_dir="results/trial_001",
-    ...     both_observable_modes=True
-    ... )
-    >>> 
-    >>> print(f"Placed {len(results['detector_positions'])} detectors")
-    >>> print(f"Generated {len(results['csv_files'])} CSV files")
     """
     
     # Convert paths to Path objects
@@ -187,9 +154,7 @@ def run_single_trial(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Apply minimal mode settings
-    # minimal_mode skips baseline and forces non-observable only
-    # but does NOT override save_plots (can be set independently)
+    
     if minimal_mode:
         both_observable_modes = False
         # Note: save_plots is NOT overridden by minimal_mode
@@ -248,7 +213,9 @@ def run_single_trial(
                     number_of_attackers=attackers_per_swarm,  # Generate multiple attackers per swarm
                     spread=swarm_spread,
                     noise_std=trajectory_noise_std,  # Use trajectory_noise_std for swarm noise
-                    waypoints=waypoints_to_use
+                    waypoints=waypoints_to_use,
+                    use_dynamic_trajectory=use_dynamic_trajectory,  # Pass dynamic trajectory setting
+                    trajectory_aggressiveness=trajectory_aggressiveness  # Pass aggressiveness parameter
                 )
                 # Generate attackers from swarm (with spread and noise applied)
                 swarm_attackers = swarm.generate_swarm(
@@ -266,14 +233,25 @@ def run_single_trial(
         sector_env.atk_drones = attackers
         print(f"   Updated environment to track {len(attackers)} swarm attackers")
     
-    elif trajectory_noise_std > 0.0:
-        # Not using swarm, but want noise during trajectory generation
-        print(f"Regenerating trajectories with noise (std={trajectory_noise_std}m)...")
+    elif trajectory_noise_std > 0.0 or use_dynamic_trajectory:
+        # Not using swarm, but want noise or dynamic trajectories
+        if use_dynamic_trajectory:
+            print(f"Regenerating trajectories with dynamic ODE/SDE mode (aggressiveness={trajectory_aggressiveness}, noise={trajectory_noise_std}m)...")
+        else:
+            print(f"Regenerating trajectories with noise (std={trajectory_noise_std}m)...")
+        
         for i, attacker in enumerate(attackers):
-            # Update attacker's noise_std and regenerate trajectory
+            # Update attacker's parameters
             attacker.noise_std = trajectory_noise_std
+            attacker.use_dynamic_trajectory = use_dynamic_trajectory
+            attacker.trajectory_aggressiveness = trajectory_aggressiveness
+            # Regenerate trajectory with new settings
             attacker.trajectory = attacker.generate_trajectory()
-        print(f"   Regenerated {len(attackers)} trajectories with noise applied during generation")
+        
+        if use_dynamic_trajectory:
+            print(f"   Regenerated {len(attackers)} trajectories with dynamic ODE/SDE system")
+        else:
+            print(f"   Regenerated {len(attackers)} trajectories with noise applied during generation")
     
     # Override waypoints based on mode
     if waypoint_mode == 'grid_center':
@@ -657,7 +635,9 @@ def run_detector_sweep(
     use_swarm_position: bool = False,
     swarm_spread: float = 0.0,
     attackers_per_swarm: int = 1,
-    save_plots: bool = False
+    save_plots: bool = False,
+    use_dynamic_trajectory: bool = False,
+    trajectory_aggressiveness: float = 2.0
 ) -> dict:
     """
     Run multiple trials with different detector counts and merge results into a single CSV.
@@ -696,6 +676,12 @@ def run_detector_sweep(
         If True, saves trajectory plots for the with_detectors + non-observable case only.
         Individual trajectory plots and combined "all trajectories" plot will be saved.
         Plots are saved to: output_dir/n{X}_detectors/plots_with_detectors/
+    use_dynamic_trajectory : bool, default=False
+        If True, generates trajectories using ODE/SDE dynamics instead of linear interpolation.
+        Creates more realistic, physics-based attack patterns with smooth acceleration/deceleration.
+    trajectory_aggressiveness : float, default=2.0
+        Controls the aggressiveness of dynamic trajectories (only used if use_dynamic_trajectory=True).
+        Range: 0.5-1.0 (gentle), 1.5-2.5 (balanced), 3.0-4.0 (aggressive), 4.5+ (very aggressive)
         
     Returns
     -------
@@ -779,7 +765,9 @@ def run_detector_sweep(
             attackers_per_swarm=attackers_per_swarm,
             minimal_mode=True,  # ALWAYS True for sweeps - skips baseline
             both_observable_modes=False,  # Always only non-observable for sweeps
-            save_plots=save_plots  # Optionally save plots for with_detectors case
+            save_plots=save_plots,  # Optionally save plots for with_detectors case
+            use_dynamic_trajectory=use_dynamic_trajectory,  # Pass through dynamic trajectory setting
+            trajectory_aggressiveness=trajectory_aggressiveness  # Pass through aggressiveness parameter
         )
         
         elapsed_time = time.time() - start_time
