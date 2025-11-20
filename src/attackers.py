@@ -183,125 +183,67 @@ class Attacker:
 
     def _generate_dynamic_trajectory(self):
         """
-        Generate a trajectory using an ODE/SDE-based system.
+        Generate a zig-zagging, noisy trajectory from start to target.
         
-        Supports waypoints: if waypoints are specified, generates dynamic trajectories
-        through each segment (start -> wp1 -> wp2 -> ... -> target).
-        
-        The trajectory is governed by a second-order system with:
-        - Attraction force towards the target (proportional to distance)
-        - Velocity damping for smooth motion
-        - Optional stochastic perturbations (Brownian motion)
-        
-        This creates more realistic, smooth attack patterns with acceleration/deceleration
-        rather than constant-velocity linear motion.
-        
-        The system is described by:
-            d²x/dt² = -γ(dx/dt) + α(x_target - x) + σξ(t)
-        where:
-            γ = damping coefficient (prevents oscillation)
-            α = attraction strength (aggressiveness parameter)
-            σ = noise intensity (from self.noise_std)
-            ξ(t) = white noise process
+        Features:
+        - Constant forward motion toward the target
+        - Zig-zag lateral movement using a periodic oscillation
+        - Optional Gaussian noise applied each step
+        - No spring/mass dynamics or ODE solver
         """
-        # If waypoints specified, generate multi-segment dynamic trajectory
+
+        # If waypoints exist, fall back to the multi-segment logic
         if self.waypoints is not None and len(self.waypoints) > 0:
             return self._generate_dynamic_trajectory_with_waypoints()
-        
-        # Single segment: start -> target
+
         start = np.asarray(self.start_position, dtype=float)
         target = np.asarray(self.target_position, dtype=float)
-        
-        # Calculate distance for time normalization
-        dist = np.linalg.norm(target - start)
-        
+
+        dir_vec = target - start
+        dist = np.linalg.norm(dir_vec)
         if dist == 0.0:
             return [tuple(start.tolist())]
-        
-        # Parameters for the dynamical system
-        # Damping coefficient (prevents oscillation, ensures smooth approach)
-        damping = 1.5
-        
-        # Attraction strength (aggressiveness)
-        alpha = self.trajectory_aggressiveness
-        
-        # Estimate time to reach target (used for integration duration)
+
+        main_dir = dir_vec / dist
+
+        perp = np.array([-main_dir[1], main_dir[0]])
+
+        # Compute number of samples based on speed or steps
         if self.speed is not None and self.speed > 0.0:
-            # Time based on average speed
-            estimated_time = dist / self.speed * 1.5  # Add 50% buffer for curved path
+            time_est = dist / self.speed
+            steps = max(int(time_est * self.steps), 10)
         else:
-            # Fallback: estimate based on steps
-            estimated_time = self.steps
-        
-        # Define the ODE system: state = [x, y, vx, vy]
-        def dynamics(t, state):
-            x, y, vx, vy = state
-            pos = np.array([x, y])
-            vel = np.array([vx, vy])
-            
-            # Force towards target
-            direction = target - pos
-            force = alpha * direction
-            
-            # Damping force
-            damping_force = -damping * vel
-            
-            # Total acceleration
-            acc = force + damping_force
-            
-            # Return derivatives: [dx/dt, dy/dt, dvx/dt, dvy/dt]
-            return [vx, vy, acc[0], acc[1]]
-        
-        # Initial conditions: position at start, zero velocity
-        y0 = [start[0], start[1], 0.0, 0.0]
-        
-        # Time span for integration
-        t_span = (0, estimated_time)
-        
-        # Solve ODE
-        # Use dense_output for smooth interpolation at any time
-        sol = solve_ivp(
-            dynamics, 
-            t_span, 
-            y0, 
-            method='RK45',  # Runge-Kutta 4/5 method
-            dense_output=True,
-            max_step=1.0,  # Maximum step size of 1 second
-        )
-        
-        # Sample trajectory at 1-second intervals
-        if self.speed is not None and self.speed > 0.0:
-            # Sample at 1-second intervals
-            t_samples = np.arange(0, estimated_time, 1.0)
-            # Always include final time
-            if t_samples[-1] < estimated_time:
-                t_samples = np.append(t_samples, estimated_time)
-        else:
-            # Use specified number of steps
-            t_samples = np.linspace(0, estimated_time, self.steps)
-        
-        # Evaluate solution at sample times
-        trajectory_states = sol.sol(t_samples)
-        
-        # Extract positions (first 2 components of state)
+            steps = self.steps
+
         trajectory = []
-        for i in range(len(t_samples)):
-            pos = trajectory_states[:2, i]
-            
-            # Add stochastic noise if requested (SDE component)
-            if self.noise_std > 0.0 and i > 0 and i < len(t_samples) - 1:
-                noise = np.random.normal(loc=0.0, scale=self.noise_std, size=2)
+        for i in range(steps + 1):
+
+            t = i / steps
+
+            # Base forward interpolation
+            pos = start + main_dir * (t * dist)
+
+            # === Zig-Zag Component ===
+            # sinusoidal offset perpendicular to forward direction
+            zig_zag_amp = getattr(self, "zigzag_amplitude", dist * 0.05)
+            zig_zag_freq = getattr(self, "zigzag_frequency", 4.0)
+            zig_offset = zig_zag_amp * np.sin(2 * np.pi * zig_zag_freq * t)
+
+            pos = pos + perp * zig_offset
+
+            # === Noise ===
+            if self.noise_std > 0.0 and i not in (0, steps):
+                noise = np.random.normal(0.0, self.noise_std, size=2)
                 pos = pos + noise
-            
+
             trajectory.append(tuple(pos.tolist()))
-        
-        # Ensure trajectory starts at exact start position
+
+        # Fix start and end exactly
         trajectory[0] = tuple(start.tolist())
-        
-        # Ensure trajectory ends at exact target position
         trajectory[-1] = tuple(target.tolist())
-        
+
         return trajectory
+
 
     def _generate_dynamic_trajectory_with_waypoints(self):
         """
@@ -377,92 +319,57 @@ class Attacker:
         if dist == 0.0:
             return [tuple(start.tolist())], np.array([0.0, 0.0])
         
-        # Initial velocity (for continuity between segments)
-        if initial_velocity is None:
-            initial_velocity = np.array([0.0, 0.0])
-        
-        # Parameters for the dynamical system
-        damping = 1.5
-        alpha = self.trajectory_aggressiveness
-        
-        # Estimate time to reach target
+        # For consistency with the new single-segment behaviour, generate
+        # a zig-zag sinusoidal offset along the segment instead of solving
+        # the ODE per-segment. This provides consistent visual style for
+        # multi-waypoint paths.
+
+        # Initial velocity argument is accepted for compatibility but not
+        # strictly required for the sinusoidal pattern. We'll ignore it for
+        # now and ensure positional continuity at segment joins.
+
+        # Compute main and perpendicular directions
+        main_dir = (target - start) / (dist + 1e-12)
+        perp = np.array([-main_dir[1], main_dir[0]])
+
+        # Determine number of samples for this segment
         if self.speed is not None and self.speed > 0.0:
-            estimated_time = dist / self.speed * 1.5
+            # Estimate time and sample per-second
+            time_est = dist / self.speed
+            steps = max(int(np.ceil(time_est * 1.0)), 3)
         else:
-            # For multi-segment, divide steps proportionally
-            estimated_time = self.steps * 0.5  # Conservative estimate per segment
-        
-        # Define the ODE system: state = [x, y, vx, vy]
-        def dynamics(t, state):
-            x, y, vx, vy = state
-            pos = np.array([x, y])
-            vel = np.array([vx, vy])
-            
-            # Force towards segment target
-            direction = target - pos
-            force = alpha * direction
-            
-            # Damping force
-            damping_force = -damping * vel
-            
-            # Total acceleration
-            acc = force + damping_force
-            
-            return [vx, vy, acc[0], acc[1]]
-        
-        # Initial conditions: position at start, velocity from previous segment
-        y0 = [start[0], start[1], initial_velocity[0], initial_velocity[1]]
-        
-        # Time span for integration
-        t_span = (0, estimated_time)
-        
-        # Solve ODE
-        sol = solve_ivp(
-            dynamics, 
-            t_span, 
-            y0, 
-            method='RK45',
-            dense_output=True,
-            max_step=1.0,
-        )
-        
-        # Sample trajectory
-        if self.speed is not None and self.speed > 0.0:
-            t_samples = np.arange(0, estimated_time, 1.0)
-            if t_samples[-1] < estimated_time:
-                t_samples = np.append(t_samples, estimated_time)
-        else:
-            t_samples = np.linspace(0, estimated_time, max(10, self.steps // 3))
-        
-        # Evaluate solution
-        trajectory_states = sol.sol(t_samples)
-        
-        # Extract positions and velocities
+            # Give at least a few points per segment
+            steps = max(3, int(np.ceil(self.steps * 0.5)))
+
         trajectory = []
-        final_vel = np.array([0.0, 0.0])
-        
-        for i in range(len(t_samples)):
-            pos = trajectory_states[:2, i]
-            vel = trajectory_states[2:4, i]
-            
-            # Add stochastic noise if requested
-            if self.noise_std > 0.0 and i > 0 and i < len(t_samples) - 1:
-                noise = np.random.normal(loc=0.0, scale=self.noise_std, size=2)
+        for i in range(steps + 1):
+            t = i / steps
+            pos = start + main_dir * (t * dist)
+
+            # Use same zig-zag parameters as single-segment generator
+            zig_zag_amp = getattr(self, "zigzag_amplitude", dist * 0.05)
+            zig_zag_freq = getattr(self, "zigzag_frequency", 4.0)
+            zig_offset = zig_zag_amp * np.sin(2 * np.pi * zig_zag_freq * t)
+            pos = pos + perp * zig_offset
+
+            # Add per-sample gaussian noise if requested
+            if self.noise_std > 0.0 and i not in (0, steps):
+                noise = np.random.normal(0.0, self.noise_std, size=2)
                 pos = pos + noise
-            
+
             trajectory.append(tuple(pos.tolist()))
-            
-            # Store final velocity
-            if i == len(t_samples) - 1:
-                final_vel = vel.copy()
-        
-        # Ensure segment starts at exact start position
+
+        # Ensure exact endpoints
         trajectory[0] = tuple(start.tolist())
-        
-        # Ensure segment ends at exact endpoint if requested
         if include_endpoint:
             trajectory[-1] = tuple(target.tolist())
-        
+
+        # Final velocity is approximated by difference of last two samples
+        if len(trajectory) >= 2:
+            final_vel = np.array(trajectory[-1]) - np.array(trajectory[-2])
+        else:
+            final_vel = np.array([0.0, 0.0])
+
         return trajectory, final_vel
 
     def _generate_trajectory_with_waypoints(self):

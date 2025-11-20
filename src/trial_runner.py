@@ -182,6 +182,26 @@ def run_single_trial(
         use_centroid_as_waypoint=use_centroid_as_waypoint,
         use_shape_centroids_as_waypoints=use_shape_centroids_as_waypoints
     )
+
+    # If dynamic trajectories are requested, choose visible-by-default zig-zag
+    # parameters based on the map scale so the lateral oscillation is clearly
+    # visible in plots. These sensible defaults can be overridden per-attacker
+    # later if needed.
+    if use_dynamic_trajectory:
+        map_diag = np.hypot(sector_env.width * sector_env.cell_size,
+                            sector_env.height * sector_env.cell_size)
+        # Moderate amplitude: 5% of diagonal or at least 2km
+        default_zigzag_amplitude = min(500.0, map_diag * 0.03)
+        # Visible frequency but less extreme
+        default_zigzag_frequency = 6.0
+        # Sampling: ensure reasonable resolution per segment without exploding runtime
+        default_dynamic_steps = max(300, int((map_diag / max(1.0, default_drone_speed)) * 1.5))
+        # cap to keep runtime bounded
+        default_dynamic_steps = min(default_dynamic_steps, 1200)
+    else:
+        default_zigzag_amplitude = None
+        default_zigzag_frequency = None
+        default_dynamic_steps = None
     
     # Apply trajectory noise or swarm positioning
     if use_swarm_position:
@@ -218,10 +238,25 @@ def run_single_trial(
                     trajectory_aggressiveness=trajectory_aggressiveness  # Pass aggressiveness parameter
                 )
                 # Generate attackers from swarm (with spread and noise applied)
+                swarm_steps = len(attacker.trajectory)
+                if use_dynamic_trajectory and default_dynamic_steps is not None:
+                    swarm_steps = default_dynamic_steps
+
                 swarm_attackers = swarm.generate_swarm(
-                    steps=len(attacker.trajectory),
+                    steps=swarm_steps,
                     speed=default_drone_speed
                 )
+                # Ensure generated attackers inherit visible zig-zag defaults
+                # CRITICAL: Must regenerate trajectories AFTER setting parameters
+                if use_dynamic_trajectory and default_zigzag_amplitude is not None:
+                    print(f"   Applying zig-zag params: amp={default_zigzag_amplitude:.1f}m, freq={default_zigzag_frequency}, steps={default_dynamic_steps}")
+                    for a in swarm_attackers:
+                        a.zigzag_amplitude = default_zigzag_amplitude
+                        a.zigzag_frequency = default_zigzag_frequency
+                        a.steps = default_dynamic_steps
+                        # REGENERATE trajectory now that parameters are set
+                        a.trajectory = a.generate_trajectory()
+                    print(f"   Regenerated {len(swarm_attackers)} trajectories with large zig-zag amplitude")
                 new_attackers.extend(swarm_attackers)
         
         attackers = new_attackers
@@ -245,6 +280,11 @@ def run_single_trial(
             attacker.noise_std = trajectory_noise_std
             attacker.use_dynamic_trajectory = use_dynamic_trajectory
             attacker.trajectory_aggressiveness = trajectory_aggressiveness
+            # If dynamic mode requested, set zig-zag defaults and increase sampling
+            if use_dynamic_trajectory and default_zigzag_amplitude is not None:
+                attacker.zigzag_amplitude = default_zigzag_amplitude
+                attacker.zigzag_frequency = default_zigzag_frequency
+                attacker.steps = default_dynamic_steps
             # Regenerate trajectory with new settings
             attacker.trajectory = attacker.generate_trajectory()
         
@@ -266,6 +306,11 @@ def run_single_trial(
         for i, attacker in enumerate(attackers):
             old_waypoints = attacker.waypoints
             attacker.waypoints = [grid_center]
+            # Apply visible zig-zag defaults (if dynamic) before regenerating
+            if use_dynamic_trajectory and default_zigzag_amplitude is not None:
+                attacker.zigzag_amplitude = default_zigzag_amplitude
+                attacker.zigzag_frequency = default_zigzag_frequency
+                attacker.steps = default_dynamic_steps
             # Regenerate trajectory with new waypoint - MUST assign back to trajectory!
             attacker.trajectory = attacker.generate_trajectory()
             print(f"   Attacker {i}: waypoints changed from {old_waypoints} to {attacker.waypoints}")
@@ -277,6 +322,11 @@ def run_single_trial(
         for i, attacker in enumerate(attackers):
             old_waypoints = attacker.waypoints
             attacker.waypoints = None
+            # Apply visible zig-zag defaults (if dynamic) before regenerating
+            if use_dynamic_trajectory and default_zigzag_amplitude is not None:
+                attacker.zigzag_amplitude = default_zigzag_amplitude
+                attacker.zigzag_frequency = default_zigzag_frequency
+                attacker.steps = default_dynamic_steps
             # Regenerate trajectory without waypoints - MUST assign back to trajectory!
             attacker.trajectory = attacker.generate_trajectory()
             print(f"   Attacker {i}: waypoints changed from {old_waypoints} to None")
@@ -889,20 +939,12 @@ if __name__ == "__main__":
     # Detector Sweep Example:
     # ========================================================================
     
-    # Uncomment to run a detector sweep (testing multiple detector counts)
-    sweep_results = run_detector_sweep(
-        json_path=project_root / "utils" / "presentation.json",
-        detector_counts=[5,10, 15, 20, 25, 30, 35, 40, 45, 50],  # Test these detector counts
-        detector_type=detector_configs.DetectorType.VISUAL,
-        sliding_window_sizes=[5, 10, 15, 20, 30],
-        optimization_method='greedy+refine',
-        output_dir=project_root / "results" / "sweep_example",
-        waypoint_mode='grid_center',
-        trajectory_noise_std=60.0,
-        use_swarm_position=True,
-        swarm_spread=700.0,
-        attackers_per_swarm=10,
-        save_plots=True  # Set to True to save plots for with_detectors + non-observable case
-    )
-     
-    print(f"\n\nSweep results saved to: {sweep_results['sweep_csv_path']}")
+    # The previous example automatically ran a large detector sweep which is
+    # computationally heavy (many trials, many swarm members, many samples).
+    # To avoid unexpectedly long runs when executing this module, we no longer
+    # run the sweep automatically. If you want to run the sweep, call
+    # `run_detector_sweep(...)` from a dedicated script or reduce the size
+    # of the sweep (fewer detector counts, smaller swarm sizes, or
+    # use_dynamic_trajectory=False).
+    print("No auto-run configured. To run a trial or sweep, call run_single_trial() or run_detector_sweep() manually.")
+    print("Example: run_single_trial(json_path=project_root / 'utils' / 'presentation.json', n_detectors=10, use_dynamic_trajectory=True, save_plots=True)")
